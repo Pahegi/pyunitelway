@@ -9,7 +9,7 @@ import time
 from pyunitelway.constants import *
 from pyunitelway.conversion import parse_mirror_result, parse_read_bit_result, parse_read_bits_result, parse_read_io_channel_result, parse_read_word_result,parse_read_float_result, parse_read_words_result, parse_read_floats_result, parse_write_io_channel_result, parse_write_result, unwrap_unite_response
 from pyunitelway.errors import BadReadBitsNumberParam, UnexpectedUniteResponse, OperationInProgrammeArea
-from pyunitelway.ima import Mode
+from pyunitelway.num import Mode
 from pyunitelway.utils import compute_bcc, duplicate_dle, format_bytearray, format_hex_list, get_response_code, \
     is_valid_response_code, sublist_in_list, delete_dle, read_word, read_dword, read_byte, read_bytes
 
@@ -916,7 +916,7 @@ class UnitelwayClient:
         :param int semgent: Object segment value
         :param int obj_type: Object type value
         :param int start_address: First address to read
-        :param int number: Number of ojbects to read
+        :param int number: Number of objects to read
         :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: UNI-TE ``READ_OBJECTS`` response
@@ -1334,16 +1334,19 @@ class UnitelwayClient:
 
         The ``data`` argument represents the last bytes of the request.
 
-        :param int segment: Object segment value
+        :param any segment: Object segment value
         :param int obj_type: Object type value
         :param int start_address: First address to write at
-        :param list[int] data: Bytes to write
+        :param Union(list[int], int) data: Bytes to write
         :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: ``True`` if the writing succeeded
         :rtype: bool
         """
         print("client.py - _write_objects func: " + "Writing objects", flush=True)
+
+        if isinstance(data, int):
+            data = [data]
 
         address_bytes = start_address.to_bytes(2, byteorder="little", signed=False)
         number_bytes = number.to_bytes(2, byteorder="little", signed=False)
