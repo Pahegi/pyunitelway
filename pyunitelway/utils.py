@@ -64,7 +64,7 @@ def get_response_code(query_code):
     :param int query_code: Request code of which we want the response code
 
     :returns: The corresponding response code
-    :rtype: int
+    :rtype: Union[int, list[int]]
     """
     if query_code in RESPONSE_CODES.keys():
         return RESPONSE_CODES[query_code]
@@ -77,12 +77,15 @@ def is_valid_response_code(query_code, resp_code):
     A code is valid if it's ``0xFD`` (request failed), ``request code + 0x30`` or ``0xFE``.
     Other response codes can be received because of conflicts (e.g. receive response for another request).
 
-    :param int query_code: Request code
-    :param int resp_code: Received response code
+    :param Union[int, list[int]] query_code: Request code
+    :param Union[int, list[int]] resp_code: Received response code
 
     :returns: True if the code is valid
     :rtype: bool
     """
+    if type(RESPONSE_CODES[query_code]) == list:
+        return resp_code in RESPONSE_CODES[query_code]
+
     return resp_code == 0xFD or resp_code == get_response_code(query_code)
 
 def sublist_in_list(list, sublist):
@@ -253,3 +256,57 @@ def check_unitelway(response):
     """
     bcc = compute_bcc(response[:-1])
     return bcc == response[-1]
+
+
+def read_byte(data):
+    """Read a byte from a list of bytes.
+
+    The byte is removed from the list.
+
+    :param list[int] data: List of bytes
+
+    :returns: Read byte
+    :rtype: int
+    """
+    return data.pop(0)
+
+def read_word(data):
+    """Read a word (2 bytes) from a list of bytes.
+
+    The word is removed from the list.
+
+    :param list[int] data: List of bytes
+
+    :returns: Read word
+    :rtype: int
+    """
+    return data.pop(0) + data.pop(0) * 256
+
+def read_dword(data):
+    """Read a double word / long word (4 bytes) from a list of bytes.
+
+    The double word is removed from the list.
+
+    :param list[int] data: List of bytes
+
+    :returns: Read double word
+    :rtype: int
+    """
+    return data.pop(0) + data.pop(0) * 256 + data.pop(0) * 65536 + data.pop(0) * 16777216
+
+def read_bytes(data, n):
+    """Read a list of bytes from a list of bytes.
+
+    The bytes are removed from the list.
+
+    :param list[int] data: List of bytes
+    :param int n: Number of bytes to read
+
+    :returns: Read bytes
+    :rtype: list[int]
+    """
+    result = []
+    for _ in range(n):
+        result.append(data.pop(0))
+
+    return result

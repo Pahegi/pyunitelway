@@ -1,4 +1,6 @@
 """UNI-TELWAY client module.
+Specifically modified for NUM 1060 Series II Controller
+as described in the manual "NUM 1060 - USE OF THE UNI-TE PROTOCOL - en-938914/0"
 """
 
 import socket
@@ -6,8 +8,11 @@ import time
 
 from pyunitelway.constants import *
 from pyunitelway.conversion import parse_mirror_result, parse_read_bit_result, parse_read_bits_result, parse_read_io_channel_result, parse_read_word_result,parse_read_float_result, parse_read_words_result, parse_read_floats_result, parse_write_io_channel_result, parse_write_result, unwrap_unite_response
-from pyunitelway.errors import BadReadBitsNumberParam, UnexpectedUniteResponse
-from pyunitelway.utils import compute_bcc, duplicate_dle, format_bytearray, format_hex_list, get_response_code, is_valid_response_code, sublist_in_list
+from pyunitelway.errors import BadReadBitsNumberParam, UnexpectedUniteResponse, OperationInProgrammeArea
+from pyunitelway.ima import Mode
+from pyunitelway.utils import compute_bcc, duplicate_dle, format_bytearray, format_hex_list, get_response_code, \
+    is_valid_response_code, sublist_in_list, delete_dle, read_word, read_dword, read_byte, read_bytes
+
 
 class UnitelwayClient:
     """UNI-TELWAY slave client. To send UNI-TELWAY messages to master PLC.
@@ -27,7 +32,7 @@ class UnitelwayClient:
     :param int xway_ext2: X-WAY ext2 value (5-6 levels addressing)
     :param bool VPN_Mode : Switch On if using VPN
     """
-    def __init__(self, slave_address, category_code, xway_network, xway_station, xway_gate, xway_ext1, xway_ext2,VPN_Mode):
+    def __init__(self, slave_address, category_code, xway_network, xway_station, xway_gate, xway_ext1, xway_ext2, VPN_Mode = False):
         """The constructor.
         
         ``ext1`` and ``ext2`` are used for 5 and 6-levels addressing. See: https://download.schneider-electric.com/files?p_enDocType=User+guide&p_File_Name=35000789_K06_000_00.pdf&p_Doc_Ref=35000789K01000, p.55 for the format.
@@ -62,6 +67,7 @@ class UnitelwayClient:
         :param int port: Adapter port
         :param list[int] connection_query: *Connection query* bytes
         """
+        print("Connecting to ip : " + ip + " on port : " + str(port))
         self.socket = socket.socket(socket.AF_INET)
         self.socket.settimeout(2)
         self.socket.connect((ip, port))
@@ -69,6 +75,7 @@ class UnitelwayClient:
 
         if connection_query is not None:
             self._send_connection_query(connection_query)
+        print("Connected to ip : " + ip + " on port : " + str(port))
 
     def _send_connection_query(self, connection_query):
         """Send the *connection query* on the socket.
@@ -77,9 +84,11 @@ class UnitelwayClient:
 
         :param list[int] connection_query: *Connection query*
         """
+        print("Sending connection query", connection_query)
         self._unitelway_query(connection_query, "Connecting to USR-TCP232-306 adapter")
 
     def disconnect_socket(self,debug=0):
+        print("Disconnecting from socket")
 
         try:
             self.socket.close()
@@ -103,6 +112,7 @@ class UnitelwayClient:
         :returns: X-WAY request bytes
         :rtype: list[int]
         """
+        print("client.py - _unite_to_xway func: " + '[{}]'.format(','.join(f'{i:02X}'for i in unite_bytes)), flush=True)
         xway_bytes = []
         for b in self._xway_start:
             xway_bytes.append(b)
@@ -125,6 +135,7 @@ class UnitelwayClient:
         :returns: UNI-TELWAY request bytes
         :rtype: list[int]
         """
+        print("client.py - _xway_to_unitelway func: " + '[{}]'.format(','.join(f'{i:02X}'for i in xway_bytes)), flush=True)
         unitelway_bytes = []
         for b in self._unitelway_start:
             unitelway_bytes.append(b)
@@ -157,6 +168,7 @@ class UnitelwayClient:
         :returns: UNI-TELWAY request bytes
         :rtype: list[int]
         """
+        print("client.py - _unite_to_unitelway func: " + '[{}]'.format(','.join(f'{i:02X}'for i in unite_bytes)), flush=True)
         xway = self._unite_to_xway(unite_bytes)
         return self._xway_to_unitelway(xway)
 
@@ -169,8 +181,9 @@ class UnitelwayClient:
 
         :param list[int] query: UNI-TELWAY request bytes
         :param str text: Text to print in debug mode
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
         """
+        print("client.py - _unitelway_query func: " + '[{}]'.format(','.join(f'{i:02X}'for i in query)), flush=True)
         bytes = bytearray(query)
         if debug >= 1:
             print(f"------------------ {text} ----------------")
@@ -191,8 +204,9 @@ class UnitelwayClient:
 
         :param list[int] query: UNI-TE request bytes
         :param str text: Text to print in debug mode
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
         """
+        print("client.py - _unite_query func: " + '[{}]'.format(','.join(f'{i:02X}'for i in query)), flush=True)
         unitelway = self._unite_to_unitelway(query)
         self._unitelway_query(unitelway, text, debug)
 
@@ -215,6 +229,7 @@ class UnitelwayClient:
             None otherwise
         :rtype: list[int] or None
         """
+        print("client.py - _wait_unite_response func: " + "Waiting for response", flush=True)
         start = time.time()
         end = start
         buf = []
@@ -250,6 +265,7 @@ class UnitelwayClient:
             if self.VPN_Mode == False:
                 end = time.time()
                 if end - start >= timeout:
+                    print("client.py - _wait_unite_response func: " + "Timeout reached", flush=True)
                     return None
 
         buf = buf[dle_stx_idx:]
@@ -271,11 +287,12 @@ class UnitelwayClient:
         :param list[int] query: UNI-TE request
         :param float timeout: Timeout before sending again the request
         :param str text: Text to print in debug mode
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: UNI-TELWAY response bytes
         :rtype: list[int]
         """
+        print("client.py - _unite_query_until_response func: " + '[{}]'.format(','.join(f'{i:02X}'for i in query)), flush=True)
         r = None
         while r is None:
             #Used with VPN
@@ -284,8 +301,7 @@ class UnitelwayClient:
                 r = self._wait_unite_response(timeout, debug)
             #Used in local / must wait polling from automate
             else:
-                if self.is_my_turn_to_talk(address):
-                    print("me")
+                if self.is_my_turn_to_talk(address, debug):
                     self._unite_query(query, text, debug)
                     r = self._wait_unite_response(timeout, debug)
         return r
@@ -304,7 +320,7 @@ class UnitelwayClient:
         :param list[int] query: UNI-TE request
         :param float timeout: Timeout before sending again the request
         :param str text: Text to print in debug mode
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: UNI-TE response bytes
         :rtype: list[int]
@@ -330,12 +346,14 @@ class UnitelwayClient:
         :param list[int] query: UNI-TE request
         :param float timeout: Timeout before sending again the request
         :param str text: Text to print in debug mode
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: Boolean. Slave authorized or not to communicate to master
 
         :raises BadUnitelwayChecksum: Received bad UNI-TELWAY checksum
         """
+        print("client.py - is_my_turn_to_talk func: " + "Waiting for sending window", flush=True)
+        print("debug : " + str(debug))
         buf = []
         is_in= False
 
@@ -348,13 +366,13 @@ class UnitelwayClient:
 
             if debug >=2:
                 print("Buffer from master")
-                print("Frame to get :"+ [DLE, ENQ,address])
-
+                # print("Frame to get :"+ [DLE, ENQ,address])
             res = sublist_in_list(buf, [DLE, ENQ,address])
             is_in=res[0]
 
             if is_in:
                 break
+        print("client.py - is_my_turn_to_talk func: " + "Got sending window", flush=True)
         return is_in
 
     #------ Mirror ------
@@ -365,7 +383,7 @@ class UnitelwayClient:
         If data are the same: return ``True``, else ``False``.
 
         :param list[int] data: Data to send in the request
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: ``True`` if the received data is the same as the sent data
         :rtype: bool
@@ -375,6 +393,7 @@ class UnitelwayClient:
         :raises UniteRequestFailed: Received ``0xFD``
         :raises UnexpectedUniteResponse: The response code is not ``MIRROR``'s response code 
         """
+        print("client.py - mirror func: " + '[{}]'.format(','.join(f'{i:02X}'for i in data)), flush=True)
         unite_query = [0xFA, self.category_code, *data]
         slave_address= self._unitelway_start[2]
         
@@ -386,7 +405,252 @@ class UnitelwayClient:
 
         return parse_mirror_result(resp[1:], data)
 
-        
+
+    #------ Unit Identification ------
+    def get_unit_identification(self, debug=0):
+        """Get the unit identification.
+
+        This request sends a ``Unit Identification`` request and returns the response.
+        The response contains "product_type", "subtype", "product_version" and "text".
+
+        :param int debug: :doc:`Debug mode </debug_levels>`
+
+        :returns: Unit identification bytes
+        :rtype: dict[str: Any]
+
+        :raises UniteRequestFailed: Received ``0xFD``
+        """
+        print("client.py - get_unit_identification func: " + "Getting unit identification", flush=True)
+        unite_query = [IDENTIFICATION, self.category_code]
+        slave_address= self._unitelway_start[2]
+
+        resp = self.run_unite(slave_address, unite_query, text="GET_UNIT_IDENTIFICATION", debug=debug)
+        if not is_valid_response_code(IDENTIFICATION, resp[0]):
+            raise UnexpectedUniteResponse(get_response_code(IDENTIFICATION), resp[0])
+        elif debug >= 2:
+            print("Got valid response")
+
+        resp = delete_dle(resp)
+
+        data = {}
+
+        product_type = resp[1]
+        match product_type:
+            case 100:
+                data["product_type"] = "NUM 1060"
+            case 101:
+                data["product_type"] = "NUM 1060 Series II"
+            case 102:
+                data["product_type"] = "NUM 1040"
+            case 103:
+                data["product_type"] = "NUM 1060-7"
+
+        subtype = chr(resp[2])
+        data["subtype"] = subtype
+
+        product_version = resp[3]
+        data["product_version"] = product_version
+
+        text = resp[5:]
+        text = ''.join([chr(i) for i in text])
+        data["text"] = text
+
+        return data
+
+    #------ Status ------
+    def get_unit_status(self, axis_group_index=0, debug=0):
+        """Get the unit status.
+
+        This request sends a ``Unit Status Data`` request and returns the response.
+
+        :param int axis_group_index: Desired axis group index
+        :param int debug: :doc:`Debug mode </debug_levels>`
+        :returns: Unit status bytes
+        :rtype: dict[str: Any]
+
+        :raises UniteRequestFailed: Received ``0xFD``
+        """
+        print("client.py - get_unit_status func: " + "Getting unit status", flush=True)
+        unite_query = [STATUS, self.category_code, axis_group_index]
+        slave_address = self._unitelway_start[2]
+        r = self.run_unite(slave_address, unite_query, text="GET_UNIT_STATUS", debug=debug)
+
+        # # r = [97, 0, 48, 2, 9, 17, 17, 144, 95, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 1, 0, 0, 40, 35, 2, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255] # with auto? and tool 600
+        # # r = [97, 0, 48, 2, 9, 17, 17, 144, 95, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 1, 2, 0, 40, 35, 2, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255] # with mdi and tool 603
+
+        if not is_valid_response_code(STATUS, r[0]):
+            raise UnexpectedUniteResponse(get_response_code(STATUS), r[0])
+
+        r = delete_dle(r)
+
+        answer_code = read_byte(r)
+
+        result = dict()
+
+        current_status = dict()
+        current_status_bits = read_byte(r)
+        current_status["system_inoperative"] = (current_status_bits & 0x01) != 0
+        current_status["recoverable_error"] = (current_status_bits & 0x02) != 0
+        current_status["unrecoverable_error"] = (current_status_bits & 0x04) != 0
+        current_status["auxiliary_power_source"] = (current_status_bits & 0x08) != 0
+        current_status["system_reset"] = (current_status_bits & 0x10) != 0
+        current_status["critical_operation"] = (current_status_bits & 0x20) != 0
+        current_status["halt"] = (current_status_bits & 0x40) != 0
+        current_status["local_mode"] = (current_status_bits & 0x80) != 0
+        result["current_status"] = current_status
+
+
+        status_mask = dict()
+        status_mask_bits = read_byte(r)
+        status_mask["system_inoperative"] = (status_mask_bits & 0x01) != 0
+        status_mask["recoverable_error"] = (status_mask_bits & 0x02) != 0
+        status_mask["unrecoverable_error"] = (status_mask_bits & 0x04) != 0
+        status_mask["auxiliary_power_source"] = (status_mask_bits & 0x08) != 0
+        status_mask["system_reset"] = (status_mask_bits & 0x10) != 0
+        status_mask["critical_operation"] = (status_mask_bits & 0x20) != 0
+        status_mask["halt"] = (status_mask_bits & 0x40) != 0
+        status_mask["local_mode"] = (status_mask_bits & 0x80) != 0
+        result["status_mask"] = status_mask
+
+        result["active_program_number"] = read_dword(r) # TODO result is wrong
+        result["active_block_number"] = read_word(r) # TODO result is wrong
+        result["program_error_number"] = read_word(r)
+        result["errored_block_number"] = read_word(r)
+        result["tool_number"] = read_word(r)
+
+        tool_direction = dict()
+        tool_direction_bits = read_word(r)
+        tool_direction["x"] = tool_direction_bits & 0x01
+        tool_direction["y"] = tool_direction_bits & 0x02
+        tool_direction["z"] = tool_direction_bits & 0x04
+        result["tool_direction"] = tool_direction
+
+        result["tool_corrector"] = read_word(r)
+
+        list_of_g_functions = dict()
+        list_of_g_functions_bits = read_dword(r)
+        list_of_g_functions["G00"] = (list_of_g_functions_bits & (1 << 0)) >> 0  # Linearinterpolation im Eilgang
+        list_of_g_functions["G01"] = (list_of_g_functions_bits & (1 << 1)) >> 1  # Linearinterpolation mit programmiertem Vorschub
+        list_of_g_functions["G02"] = (list_of_g_functions_bits & (1 << 2)) >> 2  # Kreisinterpolation im Uhrzeigersinn mit programmiertem Vorschub
+        list_of_g_functions["G03"] = (list_of_g_functions_bits & (1 << 3)) >> 3  # Kreisinterpolation gegen den Uhrzeigersinn mit programmiertem Vorschub
+        list_of_g_functions["G04"] = (list_of_g_functions_bits & (1 << 4)) >> 4  # Programmierte Verweilzeit
+        list_of_g_functions["G38"] = (list_of_g_functions_bits & (1 << 5)) >> 5  # ?
+        list_of_g_functions["G09"] = (list_of_g_functions_bits & (1 << 6)) >> 6  # Genauhalt bei Satzende vor Übergang zum nächsten Satz
+        list_of_g_functions["G17"] = (list_of_g_functions_bits & (1 << 7)) >> 7  # Wahl der Arbeitsebene XY
+        list_of_g_functions["G19"] = (list_of_g_functions_bits & (1 << 8)) >> 8  # Wahl der Arbeitsebene ZX
+        list_of_g_functions["G18"] = (list_of_g_functions_bits & (1 << 9)) >> 9  # Wahl der Arbeitsebene YZ
+        list_of_g_functions["G90"] = (list_of_g_functions_bits & (1 << 10)) >> 10  # Absolutwertprogrammierung bezogen auf Werkstücknullpunkt
+        list_of_g_functions["G91"] = (list_of_g_functions_bits & (1 << 11)) >> 11  # Kettenmaßprogrammierung bezogen auf den Startpunkt des Satzes
+        list_of_g_functions["G70"] = (list_of_g_functions_bits & (1 << 12)) >> 12  # Programmierung in Zoll
+        list_of_g_functions["G52"] = (list_of_g_functions_bits & (1 << 13)) >> 13  # Absolutwertprogrammierung der Verfahrwege bezogen auf den Maschinennullpunkt
+        list_of_g_functions["G22"] = (list_of_g_functions_bits & (1 << 14)) >> 14  # ?
+        list_of_g_functions["G40"] = (list_of_g_functions_bits & (1 << 15)) >> 15  # Aufhebung der Radiuskorrektur
+        list_of_g_functions["G41"] = (list_of_g_functions_bits & (1 << 16)) >> 16  # Radiuskorrektur links von der Kontur
+        list_of_g_functions["G42"] = (list_of_g_functions_bits & (1 << 17)) >> 17  # Radiuskorrektur rechts von der Kontur
+        list_of_g_functions["G53"] = (list_of_g_functions_bits & (1 << 18)) >> 18  # Aufhebung der Nullpunktverschiebung NP-1 und NPV-1
+        list_of_g_functions["G54"] = (list_of_g_functions_bits & (1 << 19)) >> 19  # Übernahme der Nullpunktverschiebung NP-1 und NPV-1
+        list_of_g_functions["G29"] = (list_of_g_functions_bits & (1 << 20)) >> 20  # 3D-Werkzeugkorrektur (3 Achsen oder 5 Achsen)
+        list_of_g_functions["G93"] = (list_of_g_functions_bits & (1 << 23)) >> 23  # Vorschub in Vorschub/Weg
+        list_of_g_functions["G94"] = (list_of_g_functions_bits & (1 << 24)) >> 24  # Vorschub in Millimeter, Zoll oder Grad/Minute
+        list_of_g_functions["G95"] = (list_of_g_functions_bits & (1 << 25)) >> 25  # Vorschub in Millimeter oder Zoll/Umdrehung
+        list_of_g_functions["G96"] = (list_of_g_functions_bits & (1 << 27)) >> 27  # ?
+        list_of_g_functions["G97"] = (list_of_g_functions_bits & (1 << 28)) >> 28  # Spindeldrehzahl in Umdrehungen pro Minute
+        list_of_g_functions["G20"] = (list_of_g_functions_bits & (1 << 30)) >> 30  # ?
+        list_of_g_functions["G21"] = (list_of_g_functions_bits & (1 << 31)) >> 31  # ?
+        result["list_of_g_functions"] = list_of_g_functions
+
+        list_of_processes_remaining = dict()
+        list_of_processes_remaining_bits = read_word(r)
+        list_of_processes_remaining["function G79"] = (list_of_processes_remaining_bits & (1 << 0)) >> 0
+        list_of_processes_remaining["end of external movement"] = (list_of_processes_remaining_bits & (1 << 1)) >> 1
+        list_of_processes_remaining["encoded M functions"] = (list_of_processes_remaining_bits & (1 << 2)) >> 2
+        list_of_processes_remaining["M post-function"] = (list_of_processes_remaining_bits & (1 << 3)) >> 3
+        list_of_processes_remaining["function G04"] = (list_of_processes_remaining_bits & (1 << 4)) >> 4
+        list_of_processes_remaining["function G09"] = (list_of_processes_remaining_bits & (1 << 5)) >> 5
+        list_of_processes_remaining["execution of a circle"] = (list_of_processes_remaining_bits & (1 << 6)) >> 6
+        list_of_processes_remaining["execution of a line"] = (list_of_processes_remaining_bits & (1 << 7)) >> 7
+        list_of_processes_remaining["JOG"] = (list_of_processes_remaining_bits & (1 << 7)) >> 7
+        list_of_processes_remaining["FEED STOP"] = (list_of_processes_remaining_bits & (1 << 11)) >> 11
+        list_of_processes_remaining["M pre-function"] = (list_of_processes_remaining_bits & (1 << 13)) >> 13
+        list_of_processes_remaining["T function"] = (list_of_processes_remaining_bits & (1 << 15)) >> 15
+        result["list_of_processes_remaining"] = list_of_processes_remaining
+
+        result["operator_panel_status"] = read_byte(r)
+        result["nc_status"] = read_byte(r)
+        result["nc_mode"] = Mode(read_byte(r))
+        result["machine_mode"] = read_byte(r)
+        result["current_program_number"] = read_word(r)
+        plc_status = read_byte(r)
+        if plc_status == 0:
+            result["plc_status"] = "no application"
+        elif plc_status == 1:
+            result["plc_status"] = "stopped"
+        elif plc_status == 2:
+            result["plc_status"] = "running"
+        elif plc_status == 3:
+            result["plc_status"] = "faulty"
+
+        result["plc_memory_field"] = read_bytes(r, 16)
+        return result
+
+    #------ Available bytes in RAM ------
+    def get_available_bytes_in_ram(self, debug=0):
+        """Get the available bytes in RAM.
+
+        This request sends a ``Reading the Number of Bytes Available in the RAM`` request and returns the response.
+
+        :param int debug: :doc:`Debug mode </debug_levels>`
+        :returns: Available bytes in RAM
+        :rtype: int
+
+        :raises OperationInProgrammeArea: Operation in the programme area
+        :raises UniteRequestFailed: Received ``0xFD``
+        """
+        print("client.py - get_available_bytes_in_ram func: " + "Getting available bytes in RAM", flush=True)
+        unite_query = [AVAILABLE_RAM, self.category_code, 0x47]
+        slave_address = self._unitelway_start[2]
+        r = self.run_unite(slave_address, unite_query, text="GET_AVAILABLE_BYTES_IN_RAM", debug=debug)
+
+        if not is_valid_response_code(AVAILABLE_RAM, r[:1]):
+            raise UnexpectedUniteResponse(get_response_code(AVAILABLE_RAM), r[0])
+
+        r = delete_dle(r)
+
+        status = r[2]
+        if status == 0x02:
+            raise OperationInProgrammeArea()
+
+        return int.from_bytes(r[-4:], byteorder="little", signed=False)
+
+    #------ Send message by supervisor ------
+    def send_message_by_supervisor(self, message, debug=0):
+        """Send a message by supervisor.
+
+        This request sends a ``Send Message by Supervisor`` request and returns the response.
+
+        :param str message: Message to send, 96 characters maximum
+        :param int debug: :doc:`Debug mode </debug_levels>`
+        :returns: Sending success
+        :rtype: bool
+
+        :raises UniteRequestFailed: Received ``0xFD``
+        """
+        print("client.py - send_message_by_supervisor func: " + "Sending message by supervisor", flush=True)
+
+        if len(message) > 96:
+            raise ValueError("The message is too long. It must be 96 characters maximum.")
+        num_lines = len(message)/32
+
+        unite_query = [SEND_MESSAGE, self.category_code, 0x4B, 0x00, num_lines]
+        unite_query.extend([ord(c) for c in message])
+        slave_address = self._unitelway_start[2]
+        r = self.run_unite(slave_address, unite_query, text="SEND_MESSAGE_BY_SUPERVISOR", debug=debug)
+
+        if not is_valid_response_code(SEND_MESSAGE, r[:1]):
+            raise UnexpectedUniteResponse(get_response_code(SEND_MESSAGE), r[0])
+
+
+        return r
 
     #------ Reading queries ------
     def _build_addressing_query(self, query_code, address, address_bytes_count=2, address_byte_order="little"):
@@ -410,6 +674,7 @@ class UnitelwayClient:
         :returns: Reading request
         :rtype: list[int]
         """
+        print("client.py - _build_addressing_query func: " + "Building query", flush=True)
         address_bytes = address.to_bytes(address_bytes_count, byteorder=address_byte_order, signed=False)
         unite_query = [query_code, self.category_code]
         unite_query.extend(address_bytes)
@@ -443,11 +708,12 @@ class UnitelwayClient:
             )
 
         :param int address: Bit address
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: Tuple with value and forcing for the 8 bits
         :rtype: (bool, bool, dict[int: (bool, bool)])
         """
+        print("client.py - read_internal_bit func: " + "Reading internal bit", flush=True)
         unite_query = self._build_addressing_query(READ_INTERNAL_BIT, address)
         
         slave_address= self._unitelway_start[2]
@@ -486,11 +752,12 @@ class UnitelwayClient:
             )
 
         :param int address: Bit address
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: Tuple with value and forcing for the 8 bits
         :rtype: (bool, dict[int: bool])
         """
+        print("client.py - read_system_bit func: " + "Reading system bit", flush=True)
         unite_query = self._build_addressing_query(READ_SYSTEM_BIT, address)
 
         slave_address= self._unitelway_start[2]
@@ -509,11 +776,12 @@ class UnitelwayClient:
         """Read a word (2 bytes signed integer) in the internal memory (``%MW``).
 
         :param int address: Word address
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: Signed word value
         :rtype: int
         """
+        print("client.py - read_internal_word func: " + "Reading internal word", flush=True)
 
         unite_query = self._build_addressing_query(READ_INTERNAL_WORD, address)
 
@@ -532,11 +800,13 @@ class UnitelwayClient:
         """Read a word (2 bytes signed integer) in the system memory (``%SW``).
 
         :param int address: Word address
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: Signed word value
         :rtype: int
         """
+        print("client.py - read_system_word func: " + "Reading system word", flush=True)
+
         unite_query = self._build_addressing_query(READ_SYSTEM_WORD, address)
 
         slave_address= self._unitelway_start[2]
@@ -552,11 +822,13 @@ class UnitelwayClient:
         """Read a word (2 bytes signed integer) in the constant memory (``%KW``).
 
         :param int address: Word address
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: Signed word value
         :rtype: int
         """
+        print("client.py - read_constant_word func: " + "Reading constant word", flush=True)
+
         unite_query = self._build_addressing_query(READ_CONSTANT_WORD, address)
 
         slave_address= self._unitelway_start[2]
@@ -572,11 +844,13 @@ class UnitelwayClient:
         """Read a double word (4 bytes signed integer) in the internal memory (``%MW``).
 
         :param int address: Word address
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: Signed word value
         :rtype: int
         """
+        print("client.py - read_internal_dword func: " + "Reading internal dword", flush=True)
+
         unite_query = self._build_addressing_query(READ_INTERNAL_DWORD, address)
 
         slave_address= self._unitelway_start[2]
@@ -592,11 +866,13 @@ class UnitelwayClient:
         """Read a double word (4 bytes signed integer) in the internal memory (``%MW``).
 
         :param int address: Word address
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: Signed word value
         :rtype: int
         """
+        print("client.py - read_internal_float func: " + "Reading internal float", flush=True)
+
         unite_query = self._build_addressing_query(READ_INTERNAL_DWORD, address)
 
         slave_address= self._unitelway_start[2]
@@ -612,11 +888,13 @@ class UnitelwayClient:
         """Read a double word (4 bytes signed integer) in the constant memory (``%KW``).
 
         :param int address: Word address
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: Signed word value
         :rtype: int
         """
+        print("client.py - read_constant_dword func: " + "Reading constant dword", flush=True)
+
         unite_query = self._build_addressing_query(READ_CONSTANT_DWORD, address)
 
         slave_address= self._unitelway_start[2]
@@ -639,10 +917,12 @@ class UnitelwayClient:
         :param int obj_type: Object type value
         :param int start_address: First address to read
         :param int number: Number of ojbects to read
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: UNI-TE ``READ_OBJECTS`` response
         """
+        print("client.py - _read_objects func: " + "Reading objects", flush=True)
+
         address_bytes = start_address.to_bytes(2, byteorder="little", signed=False)
         number_bytes = number.to_bytes(2, byteorder="little", signed=False)
 
@@ -682,11 +962,13 @@ class UnitelwayClient:
 
         :param int start_address: First address to read
         :param int number: Number of bits to read
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: Dictionary with value and forcing for each bit
         :rtype: dict[int: (bool, bool)]
         """
+        print("client.py - read_internal_bits func: " + "Reading internal bits", flush=True)
+
         if number % 8 != 0:
             raise BadReadBitsNumberParam(number)
 
@@ -717,11 +999,13 @@ class UnitelwayClient:
 
         :param int start_address: First address to read
         :param int number: Number of bits to read
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: Dictionary with value for each bit
         :rtype: dict[int: bool]
         """
+        print("client.py - read_system_bits func: " + "Reading system bits", flush=True)
+
         if number % 8 != 0:
             raise BadReadBitsNumberParam(number)
 
@@ -733,11 +1017,13 @@ class UnitelwayClient:
 
         :param int start_address: First address to read
         :param int number: Number of words to read
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: List of signed word values
         :rtype: list[int]
         """
+        print("client.py - read_internal_words func: " + "Reading internal words", flush=True)
+
         r = self._read_objects(0x68, 0x07, start_address, number, debug)
         #print("client.py - top read func: " + '[{}]'.format(','.join(f'{i:02X}'for i in r)) , flush=True)
         return parse_read_words_result(0x07, 2, r[1:])
@@ -747,11 +1033,13 @@ class UnitelwayClient:
 
         :param int start_address: First address to read
         :param int number: Number of words to read
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: List of signed word values
         :rtype: list[int]
         """
+        print("client.py - read_system_words func: " + "Reading system words", flush=True)
+
         r = self._read_objects(0x6A, 0x07, start_address, number, debug)
         return parse_read_words_result(0x07, 2, r[1:])
 
@@ -760,11 +1048,13 @@ class UnitelwayClient:
 
         :param int start_address: First address to read
         :param int number: Number of words to read
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: List of signed word values
         :rtype: list[int]
         """
+        print("client.py - read_constant_words func: " + "Reading constant words", flush=True)
+
         r = self._read_objects(0x69, 0x07, start_address, number, debug)
         return parse_read_words_result(0x07, 2, r[1:])
 
@@ -778,11 +1068,13 @@ class UnitelwayClient:
 
         :param int start_address: First address to read
         :param int number: Number of words to read
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: List of signed words values
         :rtype: list[int]
         """
+        print("client.py - read_internal_dwords func: " + "Reading internal dwords", flush=True)
+
         r = self._read_objects(0x68, 0x08, start_address, number, debug)
         #print("client.py - top read func: " + '[{}]'.format(','.join(f'{i:02X}'for i in r)) , flush=True)
         return parse_read_words_result(0x08, 4, r[1:])
@@ -797,11 +1089,13 @@ class UnitelwayClient:
 
         :param int start_address: First address to read
         :param int number: Number of words to read
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: List of signed words values
         :rtype: list[int]
         """
+        print("client.py - read_internal_floats func: " + "Reading internal floats", flush=True)
+
         r = self._read_objects(0x68, 0x08, start_address, number, debug)
         return parse_read_floats_result(0x08, 4, r[1:])
 
@@ -815,11 +1109,13 @@ class UnitelwayClient:
 
         :param int start_address: First address to read
         :param int number: Number of words to read
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: List of signed words values
         :rtype: list[int]
         """
+        print("client.py - read_constant_dwords func: " + "Reading constant dwords", flush=True)
+
         r = self._read_objects(0x69, 0x08, start_address, number, debug)
         return parse_read_words_result(0x08, 4, r[1:])
 
@@ -865,11 +1161,13 @@ class UnitelwayClient:
         :param int obj_type: I/O object type
         :param int number: Number of objects to read.
         :param int start_address: First address to read.
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: Dictionary with all the values
         :rtype: dict[str: dict]
         """
+        print("client.py - read_io_channel func: " + "Reading IO channel", flush=True)
+
         unite_query = [0x43, self.category_code, *xway_channel_address, 1, obj_type, number, start_address]
         r = self.run_unite(unite_query, text=f"READ_IO_CHANNEL Type={obj_type} @{start_address} N={number}", debug=debug)
 
@@ -888,11 +1186,13 @@ class UnitelwayClient:
 
         :param int address: Address to write
         :param bool value: Value to write
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: ``True`` if the writing succeeded
         :rtype: bool
         """
+        print("client.py - write_internal_bit func: " + "Writing internal bit", flush=True)
+
         unite_query = self._build_addressing_query(WRITE_INTERNAL_BIT, address)
 
         value_int = int(value)
@@ -917,11 +1217,13 @@ class UnitelwayClient:
 
         :param int address: Address to write
         :param bool value: Value to write
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: ``True`` if the writing succeeded
         :rtype: bool
         """
+        print("client.py - write_system_bit func: " + "Writing system bit", flush=True)
+
         unite_query = self._build_addressing_query(WRITE_SYSTEM_BIT, address)
 
         value_int = int(value)
@@ -944,11 +1246,13 @@ class UnitelwayClient:
 
         :param int address: Address to write
         :param int value: Value to write
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: ``True`` if the writing succeeded
         :rtype: bool
         """
+        print("client.py - write_internal_word func: " + "Writing internal word", flush=True)
+
         unite_query = self._build_addressing_query(WRITE_INTERNAL_WORD, address)
 
         value_bytes = value.to_bytes(2, byteorder="little", signed=True)
@@ -970,11 +1274,13 @@ class UnitelwayClient:
 
         :param int address: Address to write
         :param int value: Value to write
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: ``True`` if the writing succeeded
         :rtype: bool
         """
+        print("client.py - write_system_word func: " + "Writing system word", flush=True)
+
         unite_query = self._build_addressing_query(WRITE_SYSTEM_WORD, address)
 
         value_bytes = value.to_bytes(2, byteorder="little", signed=True)
@@ -997,11 +1303,13 @@ class UnitelwayClient:
 
         :param int address: Address to write
         :param int value: Value to write
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: ``True`` if the writing succeeded
         :rtype: bool
         """
+        print("client.py - write_internal_dword func: " + "Writing internal dword", flush=True)
+
         unite_query = self._build_addressing_query(WRITE_INTERNAL_DWORD, address)
 
         value_bytes = value.to_bytes(4, byteorder="little", signed=True)
@@ -1030,11 +1338,13 @@ class UnitelwayClient:
         :param int obj_type: Object type value
         :param int start_address: First address to write at
         :param list[int] data: Bytes to write
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: ``True`` if the writing succeeded
         :rtype: bool
         """
+        print("client.py - _write_objects func: " + "Writing objects", flush=True)
+
         address_bytes = start_address.to_bytes(2, byteorder="little", signed=False)
         number_bytes = number.to_bytes(2, byteorder="little", signed=False)
 
@@ -1062,11 +1372,13 @@ class UnitelwayClient:
         :param int segment: Segment where to write
         :param int start_address: First address to write at
         :param list[int] data: Signed words values to write
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: ``True`` if the writing succeeded
         :rtype: bool
         """
+        print("client.py - _write_words func: " + "Writing words", flush=True)
+
         data_bytes_2d = [w.to_bytes(2, byteorder="little", signed=True) for w in data]
         data_bytes = []
         for word_bytes in data_bytes_2d:
@@ -1082,11 +1394,13 @@ class UnitelwayClient:
 
         :param int start_address: First address to write at
         :param list[int] data: Signed words values to write
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: ``True`` if the writing succeeded
         :rtype: bool
         """
+        print("client.py - write_internal_words func: " + "Writing internal words", flush=True)
+
         ok = self._write_words(0x68, start_address, data, debug)
         return ok
 
@@ -1095,11 +1409,13 @@ class UnitelwayClient:
 
         :param int start_address: First address to write at
         :param list[int] data: Signed words values to write
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: ``True`` if the writing succeeded
         :rtype: bool
         """
+        print("client.py - write_system_words func: " + "Writing system words", flush=True)
+
         ok = self._write_words(0x6A, start_address, data, debug)
         return ok
 
@@ -1113,11 +1429,13 @@ class UnitelwayClient:
         :param int segment: Segment where to write
         :param int start_address: First address to write at
         :param list[int] data: Signed words values to write
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: ``True`` if the writing succeeded
         :rtype: bool
         """
+        print("client.py - _write_dwords func: " + "Writing dwords", flush=True)
+
         data_bytes_2d = [w.to_bytes(4, byteorder="little", signed=True) for w in data]
         data_bytes = []
         for dword_bytes in data_bytes_2d:
@@ -1136,11 +1454,13 @@ class UnitelwayClient:
 
         :param int start_address: First address to write at
         :param list[int] data: Signed words values to write
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: ``True`` if the writing succeeded
         :rtype: bool
         """
+        print("client.py - write_internal_dwords func: " + "Writing internal dwords", flush=True)
+
         ok = self._write_dwords(0x68, start_address, data, debug)
         return ok
 
@@ -1157,11 +1477,13 @@ class UnitelwayClient:
         :param int number: Number of objects to write
         :param int bits_values: Values of bits
         :param list[int] words_values: Values of words
-        :param bool debug: :doc:`Debug mode </debug_levels>`
+        :param int debug: :doc:`Debug mode </debug_levels>`
 
         :returns: ``True`` if writing succeeded (see ``conversion.parse_write_io_channel_result``)
         :rtype: bool
         """
+        print("client.py - write_io_channel func: " + "Writing IO channel", flush=True)
+
         number_bytes = number.to_bytes(2, byteorder="little", signed=False)
         address_bytes = start_address.to_bytes(2, byteorder="little", signed=False)
 

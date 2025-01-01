@@ -25,3 +25,7 @@ class UnexpectedUniteResponse(UnitelwayError):
 class UnexpectedObjectTypeResponse(UnexpectedUniteResponse):
     def __init__(self, expected, got):
         super().__init__(expected, got)
+
+class OperationInProgrammeArea(UnitelwayError):
+    def __init__(self):
+        super().__init__("Request rejected: operation in the programme area")
