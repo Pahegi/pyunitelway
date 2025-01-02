@@ -1,15 +1,17 @@
 # Pyunitelway NUM 1060
 
 This is a fork of the original [Pyunitelway](https://github.com/Purecontrol/pyunitelway) library adapted to work with the NUM 1060.
+It implements a transport layer unitelway client and multiple application layer UNITE requests.
 
 This library allows to:
 
-* Send and receive mirror requests
+* Send and validate mirror requests
 * Query unit identification
 * Query unit status data
 * Query available memory
 * Send supervisor messages
 * Read and write objects
+* Read and write ladder variables
 
 ## Relevant documentation
 

@@ -504,7 +504,7 @@ class UnitelwayClient:
         return True
 
     # ------ Reading objects queries ------
-    def _read_objects(self, segment, obj_type, start_address, number, debug=0):
+    def read_objects(self, segment, obj_type, start_address, number, debug=0):
         """Send ``READ_OBJECTS`` request.
 
         This function is a low-level function: it returns directly the UNI-TE response.
@@ -562,6 +562,7 @@ class UnitelwayClient:
             * .& - address (4 bytes)
 
         :param int number: Number of objects to read
+        :param int debug: :doc:`Debug mode </debug_levels>`
         :returns: Ladder variable value
         :rtype: Any
 
@@ -573,7 +574,7 @@ class UnitelwayClient:
 
         (symbol, symbol_request, logical_number, size, index) = parse_ladder_variable(variable, debug=debug)
         num_bytes = 1 if chr(0) <= size <= chr(7) else ladder_size(size)
-        resp = self._read_objects(symbol_request, num_bytes, logical_number, number, debug)
+        resp = self.read_objects(symbol_request, num_bytes, logical_number, number, debug)
 
         if not is_valid_response_code(READ_OBJECTS, resp[0]):
             raise UnexpectedUniteResponse(get_response_code(READ_OBJECTS), resp[0])
@@ -583,7 +584,7 @@ class UnitelwayClient:
         return parse_ladder_read_response(resp, size)
 
     # ------ Writing object queries -------
-    def _write_objects(self, segment, obj_type, start_address, number, data, debug=0):
+    def write_objects(self, segment, obj_type, start_address, number, data, debug=0):
         """Send ``WRITE_OBJECTS`` request.
 
         This function is a low-level function. It's used by ``write_xxx_bits``, ``write_xxx_words``, ``write_xxx_dwords``.
@@ -620,3 +621,61 @@ class UnitelwayClient:
             raise UnexpectedUniteResponse(get_response_code(WRITE_OBJECTS), resp[0])
 
         return parse_write_result(resp)
+
+    def write_ladder(self, variable, data, number=1, debug=0):
+        # TODO untested
+        """Write a ladder variable.
+        Index fields are not supported yet.
+
+        .. WARNING::
+        This operation is irreversible.
+        It can overwrite data and it can brick the PLC.
+        Be **very** careful when using this function.
+
+        .. WARNING::
+        Writing of single bits is not supported yet.
+
+        :param str variable: Ladder variable name in the format ``%SNNNN.S[I]`` with symbol S, logical number NNNN, size S and optional index I in square brackets
+
+            Possible values for symbol:
+
+            * %M - saved common internal variables
+            * %V - saved common variables
+            * %I - I/O interface read variables
+            * %Q - I/O interface write variables
+            * %R - CNC I/O interface read variables
+            * %W - CNC I/O interface write variables
+            * %S - common word variables
+            * %Y - local variables (not supported over UNITE)
+
+            Possible values for size:
+
+            * .n - bit (n = 0 to 7)
+            * .B - signed integer (1 byte)
+            * .W - signed integer (2 bytes, MSB at n, LSB at n+1)
+            * .L - signed integer (4 bytes, MSB at n, LSB at n+3)
+            * .& - address (4 bytes)
+
+        :param Union(int, list[int]) data: Data to write
+        :param int number: Number of bytes to be written starting with the first
+        :param int debug: :doc:`Debug mode </debug_levels>`
+        :returns: Success of the writing
+        :rtype: bool
+
+        :raises ValueError: Invalid symbol
+        :raises ValueError: Invalid logical number
+        :raises ValueError: Invalid size
+        :raises NotImplementedError: Writing of single bits is not supported yet
+        """
+        print("client.py - read_ladder func: " + "Writing ladder", flush=True)
+
+        (symbol, symbol_request, logical_number, size, index) = parse_ladder_variable(variable, debug=debug)
+        if chr(0) <= size <= chr(7):
+            raise NotImplementedError("Writing of single bits is not supported yet.")
+        num_bytes = 1 if chr(0) <= size <= chr(7) else ladder_size(size)
+        resp = self.write_objects(symbol_request, num_bytes, logical_number, number, data, debug)
+
+        if not is_valid_response_code(WRITE_OBJECTS, resp[0]):
+            raise UnexpectedUniteResponse(get_response_code(READ_OBJECTS), resp[0])
+
+        return True
