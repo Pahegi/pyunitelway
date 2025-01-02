@@ -1,10 +1,13 @@
 """Conversion and response parsing functions.
 """
 
+from pyunitelway.num import Mode, symbol_bounds
 from .constants import *
-from .errors import BadUnitelwayChecksum, RefusedUnitelwayMessage, UnexpectedObjectTypeResponse, UniteRequestFailed
-from .utils import check_unitelway, compute_bcc, compute_response_length, delete_dle, split_list_n
-import struct
+from .errors import BadUnitelwayChecksum, RefusedUnitelwayMessage, UniteRequestFailed, \
+    OperationInProgrammeArea
+from .utils import check_unitelway, compute_bcc, delete_dle, read_byte, \
+    read_word, read_dword, read_bytes
+
 
 def keep_response_bytes(response):
     """Only keep UNI-TELWAY response bytes.
@@ -17,7 +20,8 @@ def keep_response_bytes(response):
     :returns: UNI-TELWAY bytes
     :rtype: list[int]
     """
-    return response[:4] + [value for index, value in enumerate(response[4:]) if not value == response[4+index-1] == DLE]
+    return response[:4] + [value for index, value in enumerate(response[4:]) if not value == response[4 + index - 1] == DLE]
+
 
 def unwrap_unitelway_response(response):
     """Delete the duplicated ``<DLE>``'s in a UNI-TELWAY response.
@@ -34,6 +38,7 @@ def unwrap_unitelway_response(response):
     length = without_dle[3]
     return without_dle[:4 + length + 1]
 
+
 def unitelway_to_xway(response):
     """Unwrap the X-WAY message from a UNI-TELWAY response.
 
@@ -45,6 +50,7 @@ def unitelway_to_xway(response):
     :rtype: list[int]
     """
     return response[4:-1]
+
 
 def xway_to_unite(response):
     """Unwrap the UNI-TE message from a X-WAY message.
@@ -66,6 +72,7 @@ def xway_to_unite(response):
         raise RefusedUnitelwayMessage()
 
     return response[6:]
+
 
 def unwrap_unite_response(response):
     """Unwrap the UNI-TE response from a received response.
@@ -89,13 +96,13 @@ def unwrap_unite_response(response):
     :raises UniteRequestFailed: Received ``0xFD`` (which means UNI-TE request fail)
     """
     if not check_unitelway(response):
-        #print("Unitelway check failed!", flush=True)
+        # print("Unitelway check failed!", flush=True)
         raise BadUnitelwayChecksum(response[-1], compute_bcc(response[:-1]))
-    #print("Unitelway check succeeded!", flush=True)
-    
-    #print('[{}]'.format(','.join(f'{i:02X}'for i in response)), flush=True)
+    # print("Unitelway check succeeded!", flush=True)
+
+    # print('[{}]'.format(','.join(f'{i:02X}'for i in response)), flush=True)
     response = keep_response_bytes(response)
-    #print('[{}]'.format(','.join(f'{i:02X}'for i in response)), flush=True)
+    # print('[{}]'.format(','.join(f'{i:02X}'for i in response)), flush=True)
 
     # unitelway_bytes = unwrap_unitelway_response(response)
     unitelway_bytes = response
@@ -111,6 +118,7 @@ def unwrap_unite_response(response):
 
     return unite_bytes
 
+
 def parse_mirror_result(received_data, sent_data):
     """Parse the ``MIRROR`` response.
 
@@ -125,484 +133,249 @@ def parse_mirror_result(received_data, sent_data):
     """
     return received_data == sent_data
 
-def _parse_read_bit_bytes(address, values_bits, has_forcing=False, forcing_bits=None):
-    """Parse ``READ_XXX_BIT`` response bytes.
-    
-    At most 2 bytes are received:
 
-    * 8 values bits
-    * 8 forcing bits
-    
-    Note that they are no forcing bits for ``SYSTEM`` bits (``%S``).
+def parse_unit_identification(received_data):
+    """Parse the ``Unit Identification`` request.
+    The response contains "product_type", "subtype", "product_version" and "text".
 
-    | The read bit is at the position ``address % 8`` from the right. For example, if I read ``%M255``, ``255 % 8 = 7``. So ``%M255`` is the last bit from the right. The bit at the position ``0`` is ``%M248``.
-    | The same mechanism applies to the second byte, for the forcing bits.
+    :param list[int] received_data: Received data in the response
 
-    This function returns a ``tuple``, which is structured like this: ::
-
-        (
-            bool, # Value of read bit
-            bool, # Forcing of read bit
-            {
-                248: (bool, bool), # (value, forcing)
-                249: (True, False), # Value = 1, no forcing
-                250: (False, True), # Forced to 0
-                251: (True, True), # Forced to 1
-                252: (bool, bool),
-                253: (bool, bool),
-                254: (bool, bool),
-                255: (bool, bool),
-            }
-        )
-
-    :param int address: Read bit address
-    :param int value_bits: Value bits
-    :param bool has_forcing: Specify if there is forcing (only for ``INTERNAL`` bit ``%M``)
-    :param int forcing_bits: Forcing bits (only if ``has_forcing`` is ``True``)
-
-    :returns: Tuple which store the read bits values and forcing
-    :rtype: | (bool, bool, dict[int: (bool, bool)]) if forcing
-            | (bool, dict[int: bool]) if not
+    :returns: Unit identification dict containing "product_type", "subtype", "product_version" and "text".
+    :rtype: dict[str: Any]
     """
-    # All bits
-    offset = address % 8
-    result = {}
-    start_address = address - offset
-    for i in range(8):
-        value_bit = (values_bits & (1 << i)) != 0
+    resp = delete_dle(received_data)
 
-        if has_forcing:
-            forcing_bit = (forcing_bits & (1 << i)) != 0
-            t = (value_bit, forcing_bit)
-        else:
-            t = value_bit
+    data = {}
 
-        result[i + start_address] = t
+    product_type = resp[1]
+    match product_type:
+        case 100:
+            data["product_type"] = "NUM 1060"
+        case 101:
+            data["product_type"] = "NUM 1060 Series II"
+        case 102:
+            data["product_type"] = "NUM 1040"
+        case 103:
+            data["product_type"] = "NUM 1060-7"
 
-    if has_forcing:
-        return (*result[address], result)   # result[address] is a tuple,
-                                            # we use * to get (result[address][0], result[address][1], ...)
-    return (result[address], result)
+    subtype = chr(resp[2])
+    data["subtype"] = subtype
 
-def parse_read_bit_result(address, bytes, has_forcing=False):
-    """Parse ``READ_XXX_BIT`` response bytes.
-    
-    At most 2 bytes are received:
+    product_version = resp[3]
+    data["product_version"] = product_version
 
-    * 8 values bits
-    * 8 forcing bits
-    
-    Note that they are no forcing bits for ``SYSTEM`` bits (``%S``).
+    text = resp[5:]
+    text = ''.join([chr(i) for i in text])
+    data["text"] = text
 
-    | The read bit is at the position ``address % 8`` from the right. For example, if I read ``%M255``, ``255 % 8 = 7``. So ``%M255`` is the last bit from the right. The bit at the position ``0`` is ``%M248``.
-    | The same mechanism applies to the second byte, for the forcing bits.
+    return data
 
-    This function returns a ``tuple``, which is structured like this: ::
 
-        (
-            bool, # Value of read bit
-            bool, # Forcing of read bit
-            {
-                248: (bool, bool), # (value, forcing)
-                249: (True, False), # Value = 1, no forcing
-                250: (False, True), # Forced to 0
-                251: (True, True), # Forced to 1
-                252: (bool, bool),
-                253: (bool, bool),
-                254: (bool, bool),
-                255: (bool, bool),
-            }
-        )
+def parse_unit_status(received_data):
+    """Parse the ``Unit Status Data`` request.
 
-    :param int address: Read bit address
-    :param int value_bits: Value bits
-    :param bool has_forcing: Specify if there is forcing (only for ``INTERNAL`` bit ``%M``)
-    :param int forcing_bits: Forcing bits (only if ``has_forcing`` is ``True``)
+    :param list[int] received_data: Received data in the response
 
-    :returns: Tuple which store the read bits values and forcing
-    :rtype: | (bool, bool, dict[int: (bool, bool)]) if forcing
-            | (bool, dict[int: bool]) if not
+    :returns: Unit status dict
+    :rtype: dict[str: Any]
     """
-    if has_forcing:
-        return _parse_read_bit_bytes(address, bytes[0], has_forcing, bytes[1])
+    r = delete_dle(received_data)
 
-    return _parse_read_bit_bytes(address, bytes[0], has_forcing)
+    _answer_code = read_byte(r)
 
-def parse_read_bits_result(expected_obj_type, start_address, number, bytes, has_forcing=False):
-    """Parse multiple bit reading response.
+    result = dict()
 
-    The response contains ``number / 8`` bytes for bits values, followed by ``number / 8`` for the forcing bits.
+    current_status = dict()
+    current_status_bits = read_byte(r)
+    current_status["system_inoperative"] = (current_status_bits & 0x01) != 0
+    current_status["recoverable_error"] = (current_status_bits & 0x02) != 0
+    current_status["unrecoverable_error"] = (current_status_bits & 0x04) != 0
+    current_status["auxiliary_power_source"] = (current_status_bits & 0x08) != 0
+    current_status["system_reset"] = (current_status_bits & 0x10) != 0
+    current_status["critical_operation"] = (current_status_bits & 0x20) != 0
+    current_status["halt"] = (current_status_bits & 0x40) != 0
+    current_status["local_mode"] = (current_status_bits & 0x80) != 0
+    result["current_status"] = current_status
 
-    .. NOTE::
-    
-        They are no forcing bits for ``SYSTEM`` bits (``%S``).
+    status_mask = dict()
+    status_mask_bits = read_byte(r)
+    status_mask["system_inoperative"] = (status_mask_bits & 0x01) != 0
+    status_mask["recoverable_error"] = (status_mask_bits & 0x02) != 0
+    status_mask["unrecoverable_error"] = (status_mask_bits & 0x04) != 0
+    status_mask["auxiliary_power_source"] = (status_mask_bits & 0x08) != 0
+    status_mask["system_reset"] = (status_mask_bits & 0x10) != 0
+    status_mask["critical_operation"] = (status_mask_bits & 0x20) != 0
+    status_mask["halt"] = (status_mask_bits & 0x40) != 0
+    status_mask["local_mode"] = (status_mask_bits & 0x80) != 0
+    result["status_mask"] = status_mask
 
-    The start_address bit is at position ``0`` (from the right) of the first byte.
-    The first byte contains bits from address ``start_address + 0`` to ``start_address + 7``; 
-    the second byte containts the bits ``start_address + 8`` to ``start_address + 15``; etc.
+    result["active_program_number"] = read_dword(r)  # TODO result is wrong
+    result["active_block_number"] = read_word(r)  # TODO result is wrong
+    result["program_error_number"] = read_word(r)
+    result["errored_block_number"] = read_word(r)
+    result["tool_number"] = read_word(r)
 
-    The same rule applies for the forcing bits.
+    tool_direction = dict()
+    tool_direction_bits = read_word(r)
+    tool_direction["x"] = tool_direction_bits & 0x01
+    tool_direction["y"] = tool_direction_bits & 0x02
+    tool_direction["z"] = tool_direction_bits & 0x04
+    result["tool_direction"] = tool_direction
 
-    For exemple, if I read 16 bits starting at ``%M255``, the first byte contains [``%M255``, ``%M262``], the second [``%M263``, ``%M270``].
-    The two next bytes contain forcing information about [``%M255``, ``%M262``], then [``%M263``, ``%M270``].
+    result["tool_corrector"] = read_word(r)
 
-    This function returns these information in a dictionary: ::
+    list_of_g_functions = dict()
+    list_of_g_functions_bits = read_dword(r)
+    g_functions = {
+        "G00": 0,  # Linearinterpolation im Eilang
+        "G01": 1,  # Linearinterpolation mit programmiertem Vorschub
+        "G02": 2,  # Kreisinterpolation im Uhrzeigersinn mit programmiertem Vorschub
+        "G03": 3,  # Kreisinterpolation gegen den Uhrzeigersinn mit programmiertem Vorschub
+        "G04": 4,  # Programmierte Verweilzeit
+        "G38": 5,  # ?
+        "G09": 6,  # Genauhalt bei Satzende vor Übergang zum nächsten Satz
+        "G17": 7,  # Wahl der Arbeitsebene XY
+        "G19": 8,  # Wahl der Arbeitsebene ZX
+        "G18": 9,  # Wahl der Arbeitsebene YZ
+        "G90": 10,  # Absolutwertprogrammierung bezogen auf Werkstücknullpunkt
+        "G91": 11,  # Kettenmaßprogrammierung bezogen auf den Startpunkt des Satzes
+        "G70": 12,  # Programmierung in Zoll
+        "G52": 13,  # Absolutwertprogrammierung der Verfahrwege bezogen auf den Maschinennullpunkt
+        "G22": 14,  # ?
+        "G40": 15,  # Aufhebung der Radiuskorrektur
+        "G41": 16,  # Radiuskorrektur links von der Kontur
+        "G42": 17,  # Radiuskorrektur rechts von der Kontur
+        "G53": 18,  # Aufhebung der Nullpunktverschiebung NP-1 und NPV-1
+        "G54": 19,  # Übernahme der Nullpunktverschiebung NP-1 und NPV-1
+        "G29": 20,  # 3D-Werkzeugkorrektur (3 Achsen oder 5 Achsen)
+        "G93": 23,  # Vorschub in Vorschub/Weg
+        "G94": 24,  # Vorschub in Millimeter, Zoll oder Grad/Minute
+        "G95": 25,  # Vorschub in Millimeter oder Zoll/Umdrehung
+        "G96": 27,  # ?
+        "G97": 28,  # Spindeldrehzahl in Umdrehungen pro Minute
+        "G20": 30,  # ?
+        "G21": 31,  # ?
+    }
 
-        {
-            255: (bool, bool), # Value, forcing
-            256: (True, False), # Value = 1, no forcing
-            257: (True, True), # Forced to 1
-            258: (False, True), # Forced to 0
-            259: (bool, bool),
-            260: (bool, bool),
-            261: (bool, bool),
-            262: (bool, bool),
-            # ...
-        }
-    
-    :param int expected_obj_type: Object type sent in the ``READ_OBJECTS`` request
-    :param int start_address: First address read
-    :param int number: Number of bits
-    :param list[int] bytes: Received response
-    :param bool has_forcing: Specify if there is forcing (only for ``INTERNAL`` bits ``%M``)
+    for key in g_functions.keys():
+        value = g_functions[key]
+        list_of_g_functions[key] = (list_of_g_functions_bits & (1 << value)) >> value
+    result["list_of_g_functions"] = list_of_g_functions
 
-    :returns: Dictionary with values (and forcing) for each address
-    :rtype: | dict[int: (bool, bool)] if forcing
-            | dic[int: bool] if not
+    list_of_processes_remaining = dict()
+    list_of_processes_remaining_bits = read_word(r)
+    processes_remaining = {
+        "function G79": 0,
+        "end of external movement": 1,
+        "encoded M function": 2,
+        "M post-function": 3,
+        "function G04": 4,
+        "function G09": 5,
+        "execution of a circle": 6,
+        "execution of a line": 7,
+        "JOG": 8,
+        "FEED STOP": 11,
+        "M pre-function": 13,
+        "T function": 15
+    }
+    for key in processes_remaining.keys():
+        value = processes_remaining[key]
+        list_of_processes_remaining[key] = (list_of_processes_remaining_bits & (1 << value)) >> value
+    result["list_of_processes_remaining"] = list_of_processes_remaining
 
-    :raises UnexpectedObjectTypeResponse: If the ``READ_OBJECTS`` object type is not the same as the sent request
-    """
-    if bytes[0] != expected_obj_type:
-        raise UnexpectedObjectTypeResponse(expected_obj_type, bytes[1])
+    result["operator_panel_status"] = read_byte(r)
+    result["nc_status"] = read_byte(r)
+    result["nc_mode"] = Mode(read_byte(r))
+    result["machine_mode"] = read_byte(r)
+    result["current_program_number"] = read_word(r)
+    plc_status = read_byte(r)
+    if plc_status == 0:
+        result["plc_status"] = "no application"
+    elif plc_status == 1:
+        result["plc_status"] = "stopped"
+    elif plc_status == 2:
+        result["plc_status"] = "running"
+    elif plc_status == 3:
+        result["plc_status"] = "faulty"
 
-    bytes = bytes[1:]
-
-    bytes_number = number // 8
-    result = {}
-    for i in range(number):
-        vbyte_idx = i // 8
-        voffset = i % 8
-        value = (bytes[vbyte_idx] & (1 << voffset)) != 0
-
-        if has_forcing:
-            fbyte_idx = vbyte_idx + bytes_number
-            foffset = voffset
-            forcing = (bytes[fbyte_idx] & (1 << foffset)) != 0
-
-            res = (value, forcing)
-        else:
-            res = value
-
-        result[start_address + i] = res
-
+    result["plc_memory_field"] = read_bytes(r, 16)
     return result
 
-def parse_read_word_result(bytes):
-    """Parse ``READ_XXX_WORD`` and ``READ_XXX_DWORD`` response.
 
-    The response contains 2 or 4 bytes (``WORD`` or ``DWORD``). These bytes represent the signed word value (complement to 2) in little endian (less significant byte first).
+def parse_available_bytes_in_ram(received_data):
+    """Parse the ``Get available bytes in RAM`` request.
 
-    This function convert this list of bytes into a signed int.
+    :param list[int] received_data: Received data in the response
 
-    :param list[int] bytes: Received bytes without UNI-TE response code
-
-    :returns: Signed word value
+    :returns: Available bytes in RAM
     :rtype: int
+
+    :raises OperationInProgrammeArea: Operation in the programme area
     """
-    return int.from_bytes(bytes, byteorder="little", signed=True)
+    r = delete_dle(received_data)
 
-def parse_read_float_result(bytes):
-    """Parse ``READ_XXX_WORD`` and ``READ_XXX_DWORD`` response.
+    status = r[2]
+    if status == 0x02:
+        raise OperationInProgrammeArea()
 
-    The response contains 2 or 4 bytes (``WORD`` or ``DWORD``). These bytes represent the signed word value (complement to 2) in little endian (less significant byte first).
+    return read_word(r[-4:])
 
-    This function convert this list of bytes into a signed int.
 
-    :param list[int] bytes: Received bytes without UNI-TE response code
+def parse_ladder_variable(variable, debug=0):
+    """Parses a ladder variable into symbol, symbol request code, logical number, size and index.
+    Index fields are not supported yet.
 
-    :returns: Signed word value
-    :rtype: int
+    :param str variable: Ladder variable name in the format ``%SNNNN.S[I]`` with symbol S, logical number NNNN, size S and optional index I in square brackets.
+
+        Possible values for symbol:
+
+        * %M - saved common internal variables
+        * %V - saved common variables
+        * %I - I/O interface read variables
+        * %Q - I/O interface write variables
+        * %R - CNC I/O interface read variables
+        * %W - CNC I/O interface write variables
+        * %S - common word variables
+        * %Y - local variables (not supported over UNITE)
+
+        Possible values for size:
+
+        * .n - bit (n = 0 to 7)
+        * .B - signed integer (1 byte)
+        * .W - signed integer (2 bytes, MSB at n, LSB at n+1)
+        * .L - signed integer (4 bytes, MSB at n, LSB at n+3)
+        * .& - address (4 bytes)
+
+    :param int debug: :doc:`Debug mode </debug_levels>`
+    :returns: (symbol, symbol request code, logical number, size, index)
+    :rtype: Any
+
+    :raises ValueError: Invalid symbol
+    :raises ValueError: Invalid logical number
+    :raises ValueError: Invalid size
     """
-    
-    
-    bin_str=""
-    for byte in reversed(bytes):
-        bin_str+='{0:08b}'.format(byte)
+    print("client.py - parse_ladder_variable func: " + "Parsing ladder variable", flush=True)
 
-    f = int(bin_str, 2)
+    symbol = variable[:2]
+    symbol_request = LADDER_REQUEST[symbol]
+    if symbol not in ["%M", "%V", "%I", "%Q", "%R", "%W", "%S"]:
+        raise ValueError("Invalid symbol")
 
-    return struct.unpack('f', struct.pack('I', f))[0]
+    logical_number = int(variable[2:].split(".")[0], 16)
+    bounds = symbol_bounds[symbol]
+    if logical_number > bounds or logical_number < 0:
+        raise ValueError(f"Invalid logical number {logical_number} for symbol {symbol}: must be between 0 and {bounds}")
 
-def parse_read_words_result(expected_obj_type, obj_size, bytes):
-    """Parse multiple words and double words reading response.
+    size = variable.split(".")[1][0]
+    if size not in ["0", "1", "2", "4", "5", "6", "7", "B", "W", "L", "&"]:
+        raise ValueError("Invalid size")
 
-    The response contains all the bytes of all words values. The values are signed (complement to 2) and in little endian (less significant byte first). 
+    # TODO handle index field
 
-    :param int expected_obj_type: Object type sent in the ``READ_OBJECTS`` request
-    :param int obj_size: Size in bytes of the read word (2 for ``WORD``, 4 for ``DWORD``)
-    :param list[int] bytes: Received response without UNI-TE response code
+    if debug > 2: print("symbol: " + symbol + ", logical_number: " + str(logical_number) + ", size: " + size + ", symbol request code: " + hex(symbol_request), flush=True)
 
-    :returns: Values of (d)words as signed int
-    :rtype: list[int]
+    return symbol, symbol_request, logical_number, size, None
 
-    :raises UnexpectedObjectTypeResponse: If the ``READ_OBJECTS`` object type is not the same as the sent request
-    """
-    if bytes[0] != expected_obj_type:
-        raise UnexpectedObjectTypeResponse(expected_obj_type, bytes[1])
-
-    bytes = bytes[1:]
-
-    splitted = split_list_n(bytes, obj_size)
-    values = [parse_read_word_result(v) for v in splitted]
-
-    return values
-
-
-def parse_read_floats_result(expected_obj_type, obj_size, bytes):
-    """Parse multiple words and double words reading response.
-
-    The response contains all the bytes of all words values. The values are signed (complement to 2) and in little endian (less significant byte first). 
-
-    :param int expected_obj_type: Object type sent in the ``READ_OBJECTS`` request
-    :param int obj_size: Size in bytes of the read word (2 for ``WORD``, 4 for ``DWORD``)
-    :param list[int] bytes: Received response without UNI-TE response code
-
-    :returns: Values of (d)words as signed int
-    :rtype: list[int]
-
-    :raises UnexpectedObjectTypeResponse: If the ``READ_OBJECTS`` object type is not the same as the sent request
-    """
-    if bytes[0] != expected_obj_type:
-        raise UnexpectedObjectTypeResponse(expected_obj_type, bytes[1])
-
-    bytes = bytes[1:]
-
-    splitted = split_list_n(bytes, obj_size)
-    values = [parse_read_float_result(v) for v in splitted]
-
-    return values
-
-#def _parse_io_values_bytes(struct, values):
-#    length = struct[0]
-#    struct = struct[1:]
-#    
-#    result = {}
-#    for i in range(length):
-#        byte_idx = i // 8
-#        bit_idx = i % 8
-#        struct_bit = (struct[byte_idx] & (1 << bit_idx)) != 0
-#        value_bit = (values[byte_idx] & (1 << bit_idx)) != 0
-#
-#        result[i] = {
-#            "type": "o" if struct_bit else "i",
-#            "value": value_bit
-#        }
-#
-#    return result
-
-#def _parse_module_class_0_1(info_bytes):
-#    channels_nb = info_bytes[1]
-#    module_struct = info_bytes[2]
-#    io_values = info_bytes[3]
-#
-#    return _parse_io_values_bytes(module_struct, io_values)
-#
-#def _parse_module_class_2(info_bytes):
-#
-#
-#def parse_read_digital_module_image(response):
-#    report_code =  response[2]
-#    if report_code == 0: # no problem
-#        report_bytes = response[3:]
-#        module_status = report_bytes[0]
-#        if module_status == 0: # no problem
-#            module_class = report_bytes[1]
-#            if module_class
-
-def _parse_io_bit_result(start_address, bytes):
-    """Parse ``%I`` or ``%Q`` bits in ``READ_IO_CHANNEL`` response.
-
-    Bits section is a part of "Specific operation" section of ``READ_IO_CHANNEL`` response.
-
-    | The first byte is the length.
-    | The next bytes are the bits values. Each of these bytes contains 8 information about one bit, and the value of the bit is the less significant bit. That is the only bit returned.
-
-    This function return a dictionary which stores the boolean value for each address. For example, if I read 8 bit starting at address ``0``, the result is: ::
-
-        {
-            0: True,
-            1: False,
-            2: False,
-            3: False,
-            4: False,
-            5: True,
-            6: False,
-            7: False,
-        }
-    
-    :param int start_address: First read bit address
-    :param list[int] bytes: Bits values bytes
-
-    :return: Dictionary which maps addresses with values
-    :rtype: dict[int: bool]
-    """
-    length = bytes[0]
-    bytes = bytes[1:]
-
-    result = {}
-    for i in range(length):
-        bit = (bytes[i] & 1) != 0 # bit 0 is the value
-        result[start_address + i] = bit
-
-    return result
-
-def _parse_io_words_result(start_address, bytes):
-    """Parse ``%IW`` or ``%QW`` words in ``READ_IO_CHANNEL`` response.
-
-    Words section is a part of "Specific operation" section of ``READ_IO_CHANNEL`` response.
-    | The first byte is the length.
-    | If the length is ``0``: there is no more byte.
-    | If the length is > ``0``: the next bytes are the signed word values (complement to 2) in little endian.
-
-    This function return a dictionary which stores the word value for each address. For example, if I read 8 words starting at address 0, the result is: ::
-
-        {
-            0: 1,
-            1: 0,
-            2: 0,
-            3: 0,
-            4: 0,
-            5: 12,
-            6: 0,
-            7: 0,
-        }
-    
-    :param int start_address: First read word address
-    :param list[int] bytes: Bits values bytes
-
-    :return: Dictionary which maps addresses with values
-    :rtype: dict[int: int]
-    
-    """
-    splitted = split_list_n(bytes, 2)
-
-    result = {}
-    for i, v in enumerate(splitted):
-        result[start_address + i] = parse_read_word_result(v)
-
-    return result
-
-def _parse_operation_zone(start_address, bytes):
-    """Parse "Specific operation" section of ``READ_IO_CHANNEL`` section.
-
-    | The first byte is the length of this section.
-    | The next bytes are:
-
-    * %I bits values (see ``_parse_io_bits_result``)
-    * %Q bits values (see ``_parse_io_bits_result``)
-    * %IW words values (see ``_parse_io_words_result``)
-    * %QW words values (see ``_parse_io_words_result``)
-
-    The returned structure is: ::
-
-        {
-            "I": {          # see _parse_io_bits_result
-                0: True,
-                1: False,
-            },
-            "Q": {          # see _parse_io_bits_result
-                0: False,
-                1: False,
-            },
-
-            "IW": {          # see _parse_io_words_result
-                0: 1,
-                1: 0,
-            },
-            "QW": {          # see _parse_io_words_result
-                0: 1,
-                1: 0,
-            },
-        }
-
-    :param int start_address: First read object address
-    :param list[int] bytes: "Specific operation" section bytes
-
-    :returns: Dictionary which maps each section (``%I``, ``%Q``, ...) with its values
-    :rtype: dict[str: dict]
-    """
-    length = bytes[0]
-    bytes = bytes[1:]
-
-    result = {}
-
-    i_bits = _parse_io_bit_result(start_address, bytes)
-    result["I"] = i_bits
-
-    i_length = bytes[0]
-    bytes = bytes[1 + i_length:] # pop length and bit bytes
-
-    q_bits = _parse_io_bit_result(start_address, bytes)
-    result["Q"] = q_bits
-
-    q_length = bytes[0]
-    bytes = bytes[1 + q_length:] # pop length and bit bytes
-
-    iw_length_bytes = bytes[0:2]
-    bytes = bytes[2:]
-    iw_length = int.from_bytes(iw_length_bytes, byteorder="little", signed=False)
-    if iw_length > 0:
-        iw = _parse_io_words_result(start_address, bytes)
-        result["IW"] = iw
-
-    qw_length_bytes = bytes[0:2]
-    bytes = bytes[2:]
-    qw_length = int.from_bytes(qw_length_bytes, byteorder="little", signed=False)
-    if qw_length > 0:
-        qw = _parse_io_words_result(start_address, bytes)
-        result["QW"] = qw
-
-    return result
-
-def parse_read_io_channel_result(start_address, response):
-    """Parse ``READ_IO_CHANNEL`` response.
-
-    | The two first bytes are the general report and channel default: they have to be ``0``.
-    | The next read byte is the 5th byte: the operation report. It also has to be ``0``.
-    | Then, the "Specific operation" section is parsed, see ``_parse_operation_zone``.
-
-    The returned result is the same as ``_parse_operation_zone()`` result: ::
-
-        {
-            "I": {          # see _parse_io_bits_result
-                0: True,
-                1: False,
-            },
-            "Q": {          # see _parse_io_bits_result
-                0: False,
-                1: False,
-            },
-
-            "IW": {          # see _parse_io_words_result
-                0: 1,
-                1: 0,
-            },
-            "QW": {          # see _parse_io_words_result
-                0: 1,
-                1: 0,
-            },
-        }
-
-    :param int start_address: First read object address
-    :param list[int] response: UNI-TE response without the response code
-
-    :returns: Dictionary which maps each section (``%I``, ``%Q``, ...) with its values
-    :rtype: dict[str: dict]
-    """
-    if response[0] == 0 and response[1] == 0:
-        operation_report = response[5]
-        if operation_report == 0:
-            return _parse_operation_zone(start_address, response[5:])
 
 def parse_write_result(response):
     """Parse ``WRITE_XXX_XXX`` response.
@@ -614,6 +387,7 @@ def parse_write_result(response):
     """
     return response[0] == 0xFE
 
+
 def parse_write_io_channel_result(response):
     """Parse ``WRITE_IO_CHANNEL`` response.
 
@@ -624,13 +398,13 @@ def parse_write_io_channel_result(response):
     """
     return response[0] == 0
 
+
 def main():
     """Main function used for tests.
 
     Test parsing of ``READ_IO_CHANNEL`` response: ``[0x73, 0, 0, 1, 0, 1, 0, 2, 1, 0, 1, 1, 0, 0, 1, 0, 0xBC, 0]``
     """
-    r = parse_read_io_channel_result([0x73, 0, 0, 1, 0, 1, 0, 2, 1, 0, 1, 1, 0, 0, 1, 0, 0xBC, 0])
-    print("RES =", r)
+
 
 if __name__ == "__main__":
     main()

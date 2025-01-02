@@ -1,12 +1,10 @@
 from pyunitelway import UnitelwayClient
-from pyunitelway.num import Object, Mode
 
-slave_address = 0x01
 debug = 2
 
-client = UnitelwayClient(slave_address, 0x00, 0x00, 0xFE, 0x00, 0x00, 0x00)
+client = UnitelwayClient()
 # client.connect_socket("10.1.70.9", 8234)
-client.connect_socket("127.0.0.1", 8234) # used for debug mockup server
+client.connect_socket("127.0.0.1", 8234)  # used for debug mockup server
 
 # mirror request
 # print(client.mirror([0x00], debug))
@@ -30,8 +28,10 @@ client.connect_socket("127.0.0.1", 8234) # used for debug mockup server
 # print(client._write_objects(Object.MODE_SELECTION, 0x00, 0x00, 0x01, Mode.MDI))
 
 
-
 # tests
+
+# read ladder
+client.read_ladder("%MA.0")
 
 # write object request (mode)
 # _write_objects:    [10,02,01,0F,20,00,FE,00,00,00,37,00,B4,00,00,00,01,00,02,2E]

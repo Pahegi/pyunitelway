@@ -1,5 +1,21 @@
 from enum import IntEnum
 
+symbol_bounds = {
+    "%M": 0x77FF,
+    "%V": 0x7FFF,
+    "%I": 0x6F3F,
+    "%Q": 0x6F3F,
+    "%R": 0x0F7F,
+    "%W": 0x0F7F,
+    "%S": 0x3F7F
+}
+
+ladder_size = {
+    "B": 1,
+    "W": 2,
+    "L": 4,
+    "&": 4
+}
 
 class Mode(IntEnum):
     AUTO = 0x0000

@@ -1,15 +1,14 @@
 # Wait times (in ms)
 # Took from doc: https://download.schneider-electric.com/files?p_enDocType=User+guide&p_File_Name=35000789_K06_000_00.pdf&p_Doc_Ref=35000789K01000
-from enum import Enum
 
 TBIT = 1 / 9600 * 1000
 ICT = 2000
 TRET_MIN = 10 * TBIT
 TRET_MAX = ICT
 
-TERT_MIN = 150 # TEST
+TERT_MIN = 150  # TEST
 
-TIMEOUT_SEC = 2 # Time between message sent and received in second
+TIMEOUT_SEC = 2  # Time between message sent and received in second
 
 # Special chars
 DLE = 0x10
@@ -28,6 +27,16 @@ AVAILABLE_RAM = 0xF5
 SEND_MESSAGE = 0xF5
 UNSOLICITED_DATA = 0xFC
 
+LADDER_REQUEST = {
+    "%M": 0xA1,
+    "%V": 0xA0,
+    "%I": 0xA8,
+    "%Q": 0xA9,
+    "%R": 0xA4,
+    "%W": 0xA5,
+    "%S": 0xA2
+}
+
 READ_INTERNAL_BIT = 0x00
 READ_SYSTEM_BIT = 0x01
 READ_INTERNAL_WORD = 0x04
@@ -37,7 +46,7 @@ READ_INTERNAL_DWORD = 0x40
 READ_CONSTANT_DWORD = 0x41
 READ_OBJECTS = 0x36
 
-#Answer codes 
+# Answer codes
 
 READ_INTERNAL_BIT_ANSWER = 0x30
 READ_INTERNAL_WORD_ANSWER = 0x34
@@ -46,7 +55,7 @@ READ_CONSTANT_DWORD_ANSWER = 0x35
 READ_SYSTEM_BIT_ANSWER = 0x31
 READ_SYSTEM_WORD_ANSWER = 0x36
 
-#READ_DIGITAL_MODULE_IMAGE = 0x49
+# READ_DIGITAL_MODULE_IMAGE = 0x49
 READ_IO_CHANNEL = 0x43
 
 WRITE_INTERNAL_BIT = 0x10
