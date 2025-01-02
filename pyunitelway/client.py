@@ -7,10 +7,10 @@ import socket
 import time
 
 from pyunitelway.constants import *
-from pyunitelway.conversion import parse_mirror_result, parse_write_result, unwrap_unite_response, parse_unit_identification, parse_unit_status, parse_available_bytes_in_ram, parse_ladder_variable
+from pyunitelway.conversion import parse_mirror_result, parse_write_result, unwrap_unite_response, parse_unit_identification, parse_unit_status, parse_available_bytes_in_ram, parse_ladder_variable, parse_ladder_read_response
 from pyunitelway.errors import UnexpectedUniteResponse
 from pyunitelway.num import ladder_size
-from pyunitelway.utils import compute_bcc, duplicate_dle, format_bytearray, format_hex_list, get_response_code, is_valid_response_code, sublist_in_list, delete_dle
+from pyunitelway.utils import compute_bcc, duplicate_dle, format_bytearray, format_hex_list, get_response_code, is_valid_response_code, sublist_in_list, delete_dle, read_byte, read_int
 
 
 class UnitelwayClient:
@@ -503,32 +503,6 @@ class UnitelwayClient:
 
         return True
 
-    def _build_addressing_query(self, query_code, address, address_bytes_count=2, address_byte_order="little"):
-        """Create a generic UNI-TE reading and writing request.
-
-        ============  =============  ========================
-        Request code  Category code  Address
-        ============  =============  ========================
-        1 byte        1 byte         2 bytes (little endian)
-        ============  =============  ========================
-
-        This function returns these bytes from the request code and the address.
-
-        :param int query_code: Request code
-        :param int address: Reading address
-        :param int address_bytes_count: Number of bytes reserved for the address in the query
-        :param str address_byte_order: Address byte order in the request
-
-        :returns: Reading request
-        :rtype: list[int]
-        """
-        print("client.py - _build_addressing_query func: " + "Building query", flush=True)
-        address_bytes = address.to_bytes(address_bytes_count, byteorder=address_byte_order, signed=False)
-        unite_query = [query_code, self.category_code]
-        unite_query.extend(address_bytes)
-
-        return unite_query
-
     # ------ Reading objects queries ------
     def _read_objects(self, segment, obj_type, start_address, number, debug=0):
         """Send ``READ_OBJECTS`` request.
@@ -561,12 +535,33 @@ class UnitelwayClient:
 
         return resp
 
-    def read_ladder(self, variable, debug=0):
+    def read_ladder(self, variable, number=1, debug=0):
         # TODO untested
         """Read a ladder variable.
         Index fields are not supported yet.
 
         :param str variable: Ladder variable name in the format ``%SNNNN.S[I]`` with symbol S, logical number NNNN, size S and optional index I in square brackets
+
+            Possible values for symbol:
+
+            * %M - saved common internal variables
+            * %V - saved common variables
+            * %I - I/O interface read variables
+            * %Q - I/O interface write variables
+            * %R - CNC I/O interface read variables
+            * %W - CNC I/O interface write variables
+            * %S - common word variables
+            * %Y - local variables (not supported over UNITE)
+
+            Possible values for size:
+
+            * .n - bit (n = 0 to 7)
+            * .B - signed integer (1 byte)
+            * .W - signed integer (2 bytes, MSB at n, LSB at n+1)
+            * .L - signed integer (4 bytes, MSB at n, LSB at n+3)
+            * .& - address (4 bytes)
+
+        :param int number: Number of objects to read
         :returns: Ladder variable value
         :rtype: Any
 
@@ -577,14 +572,15 @@ class UnitelwayClient:
         print("client.py - read_ladder func: " + "Reading ladder", flush=True)
 
         (symbol, symbol_request, logical_number, size, index) = parse_ladder_variable(variable, debug=debug)
-        num_bytes = ladder_size(size)
-        resp = self._read_objects(symbol_request, num_bytes, logical_number, 1, debug)
+        num_bytes = 1 if chr(0) <= size <= chr(7) else ladder_size(size)
+        resp = self._read_objects(symbol_request, num_bytes, logical_number, number, debug)
 
         if not is_valid_response_code(READ_OBJECTS, resp[0]):
             raise UnexpectedUniteResponse(get_response_code(READ_OBJECTS), resp[0])
+        if not resp[1] == symbol_request:
+            raise UnexpectedUniteResponse(symbol_request, resp[1])
 
-        resp = delete_dle(resp)
-        return resp
+        return parse_ladder_read_response(resp, size)
 
     # ------ Writing object queries -------
     def _write_objects(self, segment, obj_type, start_address, number, data, debug=0):

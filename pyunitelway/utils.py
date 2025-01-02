@@ -5,6 +5,7 @@ import time
 
 from .constants import *
 
+
 def wait_ms(delay):
     """Wait during ``delay`` milliseconds.
     
@@ -14,6 +15,7 @@ def wait_ms(delay):
     now = start
     while now - start < delay / 1000:
         now = time.time()
+
 
 def format_bytearray(ba):
     """Format ``bytearray`` bytes in hexadecimal.
@@ -35,6 +37,7 @@ def format_bytearray(ba):
 
     return result
 
+
 def format_hex_list(list):
     """Format a list of bytes in hexadecimal.
     
@@ -46,6 +49,7 @@ def format_hex_list(list):
     """
     return format_bytearray(bytearray(list))
 
+
 def print_hex_list(list):
     """Print a list of bytes in hexadecimal.
 
@@ -54,6 +58,7 @@ def print_hex_list(list):
     :param list[int] list: List of bytes
     """
     print(format_hex_list(list))
+
 
 def get_response_code(query_code):
     """Return the UNI-TE response code that corresponds to a request code.
@@ -71,6 +76,7 @@ def get_response_code(query_code):
 
     return query_code + 0x30
 
+
 def is_valid_response_code(query_code, resp_code):
     """Check if a UNI-TE response code is valid.
 
@@ -87,6 +93,7 @@ def is_valid_response_code(query_code, resp_code):
         return resp_code in RESPONSE_CODES[query_code]
 
     return resp_code == 0xFD or resp_code == get_response_code(query_code)
+
 
 def sublist_in_list(list, sublist):
     """Check if a list is a sub-sequence of a list.
@@ -121,6 +128,7 @@ def sublist_in_list(list, sublist):
 
     return False, -1
 
+
 def split_list_n(list, n):
     """Split a list each ``n`` elements.
 
@@ -142,9 +150,10 @@ def split_list_n(list, n):
             if i == len(list) - 1:
                 splitted.append(word)
     except Exception:
-        raise(Exception("split_list_n function error !"))
+        raise (Exception("split_list_n function error !"))
 
     return splitted
+
 
 def compute_response_length(unitelway):
     """Compute a UNI-TELWAY response message length, skipping duplicated ``<DLE>`` characters.
@@ -161,19 +170,20 @@ def compute_response_length(unitelway):
     :rtype: int
     """
     i = 3
-    
+
     length = unitelway[i]
     len_count = 0
 
     i += 1
     len_count += 1
     while len_count <= length:
-        if unitelway[i] == DLE & unitelway[i+1] == DLE:
+        if unitelway[i] == DLE & unitelway[i + 1] == DLE:
             len_count -= 1
         len_count += 1
         i += 1
-        
+
     return i + 1
+
 
 def duplicate_dle(unitelway, start_index):
     """Duplicate ``<DLE>``'s in a UNI-TELWAY request, before sending it.
@@ -197,9 +207,10 @@ def duplicate_dle(unitelway, start_index):
         c = unitelway[i]
         if c == DLE:
             unitelway.insert(i, c)
-            i += 1 # skip the duplicated DLE
+            i += 1  # skip the duplicated DLE
 
         i += 1
+
 
 def delete_dle(unitelway):
     """Delete duplicated ``<DLE>`` characters in a UNI-TELWAY response.
@@ -210,10 +221,10 @@ def delete_dle(unitelway):
     :rtype: list[int]    
     """
     result = unitelway[:3]
-    bytes_length= len(unitelway)
-    
+    bytes_length = len(unitelway)
+
     i = 3
-    while i < bytes_length-1:
+    while i < bytes_length - 1:
         b = unitelway[i]
         if b != DLE:
             result.append(b)
@@ -223,14 +234,15 @@ def delete_dle(unitelway):
                 result.append(unitelway[i + 1])
             except:
                 pass
-                    
-            i += 1 # skip duplicated DLE
+
+            i += 1  # skip duplicated DLE
 
         i += 1
 
-    result.append(unitelway[bytes_length-1])
+    result.append(unitelway[bytes_length - 1])
 
     return result
+
 
 def compute_bcc(unitelway_bytes):
     """Compute a UNI-TELWAY message checksum.
@@ -243,6 +255,7 @@ def compute_bcc(unitelway_bytes):
     :rtype: int
     """
     return sum(unitelway_bytes) % 256
+
 
 def check_unitelway(response):
     """Check if a received UNI-TELWAY message is valid using its checksum.
@@ -270,6 +283,7 @@ def read_byte(data):
     """
     return data.pop(0)
 
+
 def read_word(data):
     """Read a word (2 bytes) from a list of bytes.
 
@@ -282,6 +296,7 @@ def read_word(data):
     """
     return data.pop(0) + data.pop(0) * 256
 
+
 def read_dword(data):
     """Read a double word / long word (4 bytes) from a list of bytes.
 
@@ -293,6 +308,7 @@ def read_dword(data):
     :rtype: int
     """
     return data.pop(0) + data.pop(0) * 256 + data.pop(0) * 65536 + data.pop(0) * 16777216
+
 
 def read_bytes(data, n):
     """Read a list of bytes from a list of bytes.
@@ -310,3 +326,14 @@ def read_bytes(data, n):
         result.append(data.pop(0))
 
     return result
+
+
+def read_int(data):
+    """Read an integer with variable number of bytes from a list of bytes.
+
+    :param list[int] data: List of bytes
+
+    :returns: Read integer
+    :rtype: int
+    """
+    return int.from_bytes(data, byteorder='little')

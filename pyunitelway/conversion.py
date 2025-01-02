@@ -6,7 +6,7 @@ from .constants import *
 from .errors import BadUnitelwayChecksum, RefusedUnitelwayMessage, UniteRequestFailed, \
     OperationInProgrammeArea
 from .utils import check_unitelway, compute_bcc, delete_dle, read_byte, \
-    read_word, read_dword, read_bytes
+    read_word, read_dword, read_bytes, read_int
 
 
 def keep_response_bytes(response):
@@ -371,10 +371,31 @@ def parse_ladder_variable(variable, debug=0):
         raise ValueError("Invalid size")
 
     # TODO handle index field
+    if "[" in variable:
+        raise NotImplementedError("Index fields are not supported yet")
 
     if debug > 2: print("symbol: " + symbol + ", logical_number: " + str(logical_number) + ", size: " + size + ", symbol request code: " + hex(symbol_request), flush=True)
 
     return symbol, symbol_request, logical_number, size, None
+
+
+def parse_ladder_read_response(response, size):
+    """Parse ladder read response
+    Returns the value of the ladder variable as an integer or a boolean if the size is a bit.
+
+    :param list[int] response: Response **with** UNI-TE response code
+    :param str size: Size value of the ladder variable (``n`` in range [0,7], ``B``, ``W``, ``L``, ``&``)
+
+    :returns: Value of the ladder variable
+    :rtype: Union[int, bool]
+    """
+    resp = delete_dle(response)
+    resp = resp[2:]  # first two characters are response code and object address
+    if chr(0) <= size <= chr(7):
+        read_byte(resp)
+        return (resp[0] >> int(size)) & 1
+    else:
+        return read_int(resp[1:])
 
 
 def parse_write_result(response):
@@ -386,17 +407,6 @@ def parse_write_result(response):
     :rtype: bool    
     """
     return response[0] == 0xFE
-
-
-def parse_write_io_channel_result(response):
-    """Parse ``WRITE_IO_CHANNEL`` response.
-
-    :param list[int] response: Response without UNI-TE response code
-
-    :returns: ``True`` if the first byte (report) is ``0``
-    :rtype: bool
-    """
-    return response[0] == 0
 
 
 def main():
