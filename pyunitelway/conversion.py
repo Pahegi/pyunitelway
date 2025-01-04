@@ -4,7 +4,7 @@
 from pyunitelway.num import Mode, symbol_bounds
 from .constants import *
 from .errors import BadUnitelwayChecksum, RefusedUnitelwayMessage, UniteRequestFailed, \
-    OperationInProgrammeArea
+    OperationInProgrammeArea, UnexpectedAdditionalAwnserCode
 from .utils import check_unitelway, compute_bcc, delete_dle, read_byte, \
     read_word, read_dword, read_bytes, read_int
 
@@ -311,8 +311,12 @@ def parse_available_bytes_in_ram(received_data):
     :rtype: int
 
     :raises OperationInProgrammeArea: Operation in the programme area
+    :raises UnexpectedAdditionalAwnserCode: Unexpected additional answer code
     """
     r = delete_dle(received_data)
+
+    if not r[1] == 0x77:
+        raise UnexpectedAdditionalAwnserCode(0x77, r[1])
 
     status = r[2]
     if status == 0x02:
@@ -407,6 +411,38 @@ def parse_write_result(response):
     :rtype: bool    
     """
     return response[0] == 0xFE
+
+
+def parse_unit_fault_history(response):
+    """Parse get_unit_fault_history response
+
+    :param list[int] response: Response **with** UNI-TE response code
+
+    :returns: quadrouple of:
+        * number of messages sent and not acknowledged,
+        * number of messages sent and rejected,
+        * number of messages received and not acknowledged,
+        * number of messages received and rejected.
+    :rtype: (int, int, int, int)
+    """
+    resp = delete_dle(response)
+    r = resp[1:]
+    return read_word(r), read_word(r), read_word(r), read_word(r)
+
+
+def parse_stations_managed_by_master(response):
+    """Parse get_stations_managed_by_master response
+
+    :param list[int] response: Response **with** UNI-TE response code
+
+    :returns: number of stations managed and their status (connected/unconnected as list of bool)
+    :rtype: (int, list[bool])
+    """
+    resp = delete_dle(response)
+    r = resp[1:]
+    num_stations = read_byte(r)
+    # TODO create list of bits
+    return NotImplementedError(num_stations)
 
 
 def main():

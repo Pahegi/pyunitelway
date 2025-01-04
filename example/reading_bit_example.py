@@ -1,51 +1,54 @@
 from pyunitelway import UnitelwayClient
 from pyunitelway.num import Object, Mode
 
-debug = 2
+debug = 0
 
 client = UnitelwayClient()
 client.connect_socket("10.1.70.9", 8234)
 # client.connect_socket("127.0.0.1", 8234)  # used for debug mockup server
 
 # mirror request
-print(client.mirror([0x00], debug))  # returns true if mirror request was successful (basically ping num 1060)
+# print(client.mirror([0x00], debug))  # returns true if mirror request was successful (basically ping num 1060)
 
 # unit identification
-print(client.get_unit_identification(debug))  # returns type of unit (e.g. NUM 1060 UC SII)
+# print(client.get_unit_identification(debug))  # returns type of unit (e.g. NUM 1060 UC SII)
 
 # get unit status data
-print(client.get_unit_status(debug))  # returns status data (e.g. current mode, program number, active G-code, etc.)
+# print(client.get_unit_status(debug))  # returns status data (e.g. current mode, program number, active G-code, etc.)
 
 # get number of bytes available in NC RAM
-print(client.get_available_bytes_in_ram(debug))
+# print(client.get_available_bytes_in_ram(debug))
 
 # send message by the supervisor
-print(client.send_message_by_supervisor("Hello World!", debug))  # sends message to network messages menu
+# print(client.write_message("Hello World!", debug))  # sends message to network messages menu
 
 # read object request (mode)
-print(client.read_objects(Object.MODE_SELECTION, 0x00, 0x00, 0x01))  # returns current mode
+# print(client._read_objects(Object.MODE_SELECTION, 0x00, 0x00, 0x01))  # returns current mode
 
 # write object request (mode)
-print(client.write_objects(Object.MODE_SELECTION, 0x00, 0x00, 0x01, Mode.MDI))  # sets mode to MDI
+print(client._write_objects(Object.MODE_SELECTION, 0x00, 0x00, 0x01, [Mode.AUTO, 0x00]))  # sets mode to MDI
+
+# print(client.get_stations_managed_by_master())
+# print(client.get_unit_fault_history())
 
 # read ladder
-print(client.read_ladder("%R5.1"))  # program active
-print(client.read_ladder("%R16.B"))  # current mode
-print(client.read_ladder("%R1A.W"))  # active program number
-print(client.read_ladder("%R14.1"))  # battery status
-print(client.read_ladder("%R17.B"))  # displayed page number
-print(client.read_ladder("%R18.B"))  # machine error number
+# print(client.read_ladder("%R5.1"))  # program active
+# print(client.read_ladder("%R16.B"))  # current mode
+# print(client.read_ladder("%R1A.W"))  # active program number
+# print(client.read_ladder("%R14.1"))  # battery status
+# print(client.read_ladder("%R17.B"))  # displayed page number
+# print(client.read_ladder("%R18.B"))  # machine error number
 
 # write ladder
-print(client.write_ladder("%W3.2", 0x01))  # cycle start set (needs reset)
-print(client.write_ladder("%W3.2", 0x00))  # cycle start reset
-
-print(client.write_ladder("%W3.1", 0x01))  # cycle stop set (needs reset)
-print(client.write_ladder("%W3.1", 0x00))  # cycle stop reset
-
-print(client.write_ladder("%W3.0", 0x01))  # reset request
-
-print(client.write_ladder("%W15.B", 210))  # output message N210 $ Werkzeug-Nr. falsch gewaehlt
+# print(client.write_ladder("%W3.2", 0x01))  # cycle start set (needs reset)
+# print(client.write_ladder("%W3.2", 0x00))  # cycle start reset
+#
+# print(client.write_ladder("%W3.1", 0x01))  # cycle stop set (needs reset)
+# print(client.write_ladder("%W3.1", 0x00))  # cycle stop reset
+#
+# print(client.write_ladder("%W3.0", 0x01))  # reset request
+#
+# print(client.write_ladder("%W15.B", 210))  # output message N210 $ Werkzeug-Nr. falsch gewaehlt
 
 # tests
 

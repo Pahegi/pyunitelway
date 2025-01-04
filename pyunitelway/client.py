@@ -7,7 +7,8 @@ import socket
 import time
 
 from pyunitelway.constants import *
-from pyunitelway.conversion import parse_mirror_result, parse_write_result, unwrap_unite_response, parse_unit_identification, parse_unit_status, parse_available_bytes_in_ram, parse_ladder_variable, parse_ladder_read_response
+from pyunitelway.conversion import parse_mirror_result, parse_write_result, unwrap_unite_response, parse_unit_identification, parse_unit_status, parse_available_bytes_in_ram, parse_ladder_variable, parse_ladder_read_response, \
+    parse_unit_fault_history, parse_stations_managed_by_master
 from pyunitelway.errors import UnexpectedUniteResponse
 from pyunitelway.num import ladder_size
 from pyunitelway.utils import compute_bcc, duplicate_dle, format_bytearray, format_hex_list, get_response_code, is_valid_response_code, sublist_in_list, delete_dle, read_byte, read_int
@@ -15,7 +16,6 @@ from pyunitelway.utils import compute_bcc, duplicate_dle, format_bytearray, form
 
 class UnitelwayClient:
     """UNI-TELWAY slave client. To send UNI-TELWAY messages to master PLC.
-
     The sender PC is considered a slave, and the contacted PLC is the master.
 
     .. NOTE::
@@ -40,10 +40,9 @@ class UnitelwayClient:
     :param int xway_ext1: X-WAY ext1 value (5-6 levels addressing)
     :param int xway_ext2: X-WAY ext2 value (5-6 levels addressing)
     :param bool VPN_Mode : Switch On if using VPN
-
     """
 
-    def __init__(self, slave_address=0x00, category_code=0x00, xway_network=0x00, xway_station=0xFE, xway_gate=0x00, xway_ext1=0x00, xway_ext2=0x00, VPN_Mode=False):
+    def __init__(self, slave_address=0x01, category_code=0x00, xway_network=0x00, xway_station=0xFE, xway_gate=0x00, xway_ext1=0x00, xway_ext2=0x00, VPN_Mode=False):
         """The constructor.
         
         ``ext1`` and ``ext2`` are used for 5 and 6-levels addressing. See: https://download.schneider-electric.com/files?p_enDocType=User+guide&p_File_Name=35000789_K06_000_00.pdf&p_Doc_Ref=35000789K01000, p.55 for the format.
@@ -66,6 +65,7 @@ class UnitelwayClient:
         self.link_address = slave_address
         self.VPN_Mode = VPN_Mode
 
+    # ------- LIBRARY SPECIFIC FUNCTIONS -------
     def connect_socket(self, ip, port, connection_query=None):
         """Connect to the USR-TCP232-306 adapter.
 
@@ -374,137 +374,11 @@ class UnitelwayClient:
         if debug >= 2: print("client.py - is_my_turn_to_talk func: " + "Got sending window", flush=True)
         return is_in
 
-    def mirror(self, data, debug=0):
-        """Test connection with ``MIRROR`` request.
+    ####################################
+    # ACCESS TO DATA
+    ####################################
 
-        This request sends a bunch of data and checks if the received message contains the same data.
-        If data are the same: return ``True``, else ``False``.
-
-        :param list[int] data: Data to send in the request
-        :param int debug: :doc:`Debug mode </debug_levels>`
-
-        :returns: ``True`` if the received data is the same as the sent data
-        :rtype: bool
-
-        :raises BadUnitelwayChecksum: Bad UNI-TELWAY checksum
-        :raises RefusedUnitelwayMessage: X-WAY type code == ``0x22``
-        :raises UniteRequestFailed: Received ``0xFD``
-        :raises UnexpectedUniteResponse: The response code is not ``MIRROR``'s response code 
-        """
-        print("client.py - mirror func: " + '[{}]'.format(','.join(f'{i:02X}' for i in data)), flush=True)
-        unite_query = [0xFA, self.category_code, *data]
-        slave_address = self._unitelway_start[2]
-
-        resp = self.run_unite(slave_address, unite_query, text="MIRROR", debug=debug)
-
-        if not is_valid_response_code(MIRROR, resp[0]):
-            raise UnexpectedUniteResponse(get_response_code(MIRROR), resp[0])
-
-        return parse_mirror_result(resp[1:], data)
-
-    def get_unit_identification(self, debug=0):
-        # TODO untested
-        """Get the unit identification.
-
-        This request sends a ``Unit Identification`` request and returns the response.
-        The response contains "product_type", "subtype", "product_version" and "text".
-
-        :param int debug: :doc:`Debug mode </debug_levels>`
-
-        :returns: Unit identification dict containing "product_type", "subtype", "product_version" and "text".
-        :rtype: dict[str: Any]
-
-        :raises UniteRequestFailed: Received ``0xFD``
-        """
-        print("client.py - get_unit_identification func: " + "Getting unit identification", flush=True)
-        unite_query = [IDENTIFICATION, self.category_code]
-        slave_address = self._unitelway_start[2]
-
-        resp = self.run_unite(slave_address, unite_query, text="GET_UNIT_IDENTIFICATION", debug=debug)
-        if not is_valid_response_code(IDENTIFICATION, resp[0]):
-            raise UnexpectedUniteResponse(get_response_code(IDENTIFICATION), resp[0])
-
-        return parse_unit_identification(resp)
-
-    def get_unit_status(self, axis_group_index=0, debug=0):
-        # TODO untested
-        """Get the unit status.
-
-        This request sends a ``Unit Status Data`` request and returns the response.
-
-        :param int axis_group_index: Desired axis group index
-        :param int debug: :doc:`Debug mode </debug_levels>`
-        :returns: Unit status bytes
-        :rtype: dict[str: Any]
-
-        :raises UniteRequestFailed: Received ``0xFD``
-        """
-        print("client.py - get_unit_status func: " + "Getting unit status", flush=True)
-        unite_query = [STATUS, self.category_code, axis_group_index]
-        slave_address = self._unitelway_start[2]
-        r = self.run_unite(slave_address, unite_query, text="GET_UNIT_STATUS", debug=debug)
-        # # r = [97, 0, 48, 2, 9, 17, 17, 144, 95, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 1, 0, 0, 40, 35, 2, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255] # with auto? and tool 600
-        # # r = [97, 0, 48, 2, 9, 17, 17, 144, 95, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 1, 2, 0, 40, 35, 2, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255] # with mdi and tool 603
-
-        if not is_valid_response_code(STATUS, r[0]):
-            raise UnexpectedUniteResponse(get_response_code(STATUS), r[0])
-
-        return parse_unit_status(r)
-
-    def get_available_bytes_in_ram(self, debug=0):
-        # TODO untested
-        """Get the available bytes in RAM.
-
-        This request sends a ``Reading the Number of Bytes Available in the RAM`` request and returns the response.
-
-        :param int debug: :doc:`Debug mode </debug_levels>`
-        :returns: Available bytes in RAM
-        :rtype: int
-
-        :raises OperationInProgrammeArea: Operation in the programme area
-        :raises UniteRequestFailed: Received ``0xFD``
-        """
-        print("client.py - get_available_bytes_in_ram func: " + "Getting available bytes in RAM", flush=True)
-        unite_query = [AVAILABLE_RAM, self.category_code, 0x47]
-        slave_address = self._unitelway_start[2]
-        r = self.run_unite(slave_address, unite_query, text="GET_AVAILABLE_BYTES_IN_RAM", debug=debug)
-
-        if not is_valid_response_code(AVAILABLE_RAM, r[:1]):
-            raise UnexpectedUniteResponse(get_response_code(AVAILABLE_RAM), r[0])
-
-        return parse_available_bytes_in_ram(r)
-
-    def send_message_by_supervisor(self, message, debug=0):
-        # TODO untested
-        """Send a message by supervisor.
-
-        This request sends a ``Send Message by Supervisor`` request and returns the response.
-
-        :param str message: Message to send, 96 characters maximum
-        :param int debug: :doc:`Debug mode </debug_levels>`
-        :returns: Sending success
-        :rtype: bool
-
-        :raises UniteRequestFailed: Received ``0xFD``
-        """
-        print("client.py - send_message_by_supervisor func: " + "Sending message by supervisor", flush=True)
-
-        if len(message) > 96:
-            raise ValueError("The message is too long. It must be 96 characters maximum.")
-        num_lines = len(message) / 32
-
-        unite_query = [SEND_MESSAGE, self.category_code, 0x4B, 0x00, num_lines]
-        unite_query.extend([ord(c) for c in message])
-        slave_address = self._unitelway_start[2]
-        r = self.run_unite(slave_address, unite_query, text="SEND_MESSAGE_BY_SUPERVISOR", debug=debug)
-
-        if not is_valid_response_code(SEND_MESSAGE, r[:1]):
-            raise UnexpectedUniteResponse(get_response_code(SEND_MESSAGE), r[0])
-
-        return True
-
-    # ------ Reading objects queries ------
-    def read_objects(self, segment, obj_type, start_address, number, debug=0):
+    def _read_objects(self, segment, obj_type, start_address, number, debug=0):
         """Send ``READ_OBJECTS`` request.
 
         This function is a low-level function: it returns directly the UNI-TE response.
@@ -534,6 +408,20 @@ class UnitelwayClient:
             raise UnexpectedUniteResponse(get_response_code(READ_OBJECTS), resp[0])
 
         return resp
+
+    def read_objects(self, object, number, offset=0, debug=0):
+        """High level abstraction function to read objects
+        TODO pass object from Object Enum and automatically figure out address and return type/size
+
+        :param Object object: Object to read
+        :param Int number: Number of objects to read
+        :param Int offset: TODO offset in bytes or words?
+        :param int debug: :doc:`Debug mode </debug_levels>`
+
+        :returns: Requested Object in corresponding type (depending on object)
+        :rtype: Any
+        """
+        return NotImplementedError()
 
     def read_ladder(self, variable, number=1, debug=0):
         # TODO untested
@@ -583,8 +471,7 @@ class UnitelwayClient:
 
         return parse_ladder_read_response(resp, size)
 
-    # ------ Writing object queries -------
-    def write_objects(self, segment, obj_type, start_address, number, data, debug=0):
+    def _write_objects(self, segment, obj_type, start_address, number, data, debug=0):
         """Send ``WRITE_OBJECTS`` request.
 
         This function is a low-level function. It's used by ``write_xxx_bits``, ``write_xxx_words``, ``write_xxx_dwords``.
@@ -622,18 +509,32 @@ class UnitelwayClient:
 
         return parse_write_result(resp)
 
+    def write_objects(self, object, number, data, offset=0, debug=0):
+        """High level abstraction function to write objects
+        TODO pass object from Object Enum. Automatically figure out the address and if object is allowed to be written
+
+        :param Object object: Object to read
+        :param Int number: Number of objects to read
+        :param Int offset: TODO offset in bytes or words?
+        :param int debug: :doc:`Debug mode </debug_levels>`
+
+        :returns: Requested Object in corresponding type (depending on object)
+        :rtype: Any
+        """
+        return NotImplementedError()
+
     def write_ladder(self, variable, data, number=1, debug=0):
         # TODO untested
         """Write a ladder variable.
         Index fields are not supported yet.
 
         .. WARNING::
-        This operation is irreversible.
-        It can overwrite data and it can brick the PLC.
-        Be **very** careful when using this function.
+            This operation is irreversible.
+            It can overwrite data and it can brick the PLC.
+            Be **very** careful when using this function.
 
         .. WARNING::
-        Writing of single bits is not supported yet.
+            Writing of single bits is not supported yet.
 
         :param str variable: Ladder variable name in the format ``%SNNNN.S[I]`` with symbol S, logical number NNNN, size S and optional index I in square brackets
 
@@ -677,5 +578,212 @@ class UnitelwayClient:
 
         if not is_valid_response_code(WRITE_OBJECTS, resp[0]):
             raise UnexpectedUniteResponse(get_response_code(READ_OBJECTS), resp[0])
+
+        return True
+
+    ####################################
+    # GENERAL PURPOSE REQUESTS
+    ####################################
+
+    def get_unit_identification(self, debug=0):
+        """Get the unit identification.
+
+        This request sends a ``Unit Identification`` request and returns the response.
+        The response contains "product_type", "subtype", "product_version" and "text".
+
+        :param int debug: :doc:`Debug mode </debug_levels>`
+
+        :returns: Unit identification dict containing "product_type", "subtype", "product_version" and "text".
+        :rtype: dict[str: Any]
+
+        :raises UniteRequestFailed: Received ``0xFD``
+        """
+        print("client.py - get_unit_identification func: " + "Getting unit identification", flush=True)
+        unite_query = [IDENTIFICATION, self.category_code]
+        slave_address = self._unitelway_start[2]
+
+        resp = self.run_unite(slave_address, unite_query, text="GET_UNIT_IDENTIFICATION", debug=debug)
+        if not is_valid_response_code(IDENTIFICATION, resp[0]):
+            raise UnexpectedUniteResponse(get_response_code(IDENTIFICATION), resp[0])
+
+        return parse_unit_identification(resp)
+
+    def get_unit_status(self, axis_group_index=0, debug=0):
+        """Get the unit status.
+
+        This request sends a ``Unit Status Data`` request and returns the response.
+
+        :param int axis_group_index: Desired axis group index
+        :param int debug: :doc:`Debug mode </debug_levels>`
+        :returns: Unit status bytes
+        :rtype: dict[str: Any]
+
+        :raises UniteRequestFailed: Received ``0xFD``
+        """
+        print("client.py - get_unit_status func: " + "Getting unit status", flush=True)
+        unite_query = [STATUS, self.category_code, axis_group_index]
+        slave_address = self._unitelway_start[2]
+        r = self.run_unite(slave_address, unite_query, text="GET_UNIT_STATUS", debug=debug)
+        # # r = [97, 0, 48, 2, 9, 17, 17, 144, 95, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 1, 0, 0, 40, 35, 2, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255] # with auto? and tool 600
+        # # r = [97, 0, 48, 2, 9, 17, 17, 144, 95, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 1, 2, 0, 40, 35, 2, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255] # with mdi and tool 603
+
+        if not is_valid_response_code(STATUS, r[0]):
+            raise UnexpectedUniteResponse(get_response_code(STATUS), r[0])
+
+        return parse_unit_status(r)
+
+    ####################################
+    # COMMUNICATION INTERFACE REQUESTS
+    ####################################
+
+    def mirror(self, data, debug=0):
+        """Test connection with ``MIRROR`` request.
+
+        This request sends a bunch of data and checks if the received message contains the same data.
+        If data are the same: return ``True``, else ``False``.
+
+        :param list[int] data: Data to send in the request
+        :param int debug: :doc:`Debug mode </debug_levels>`
+
+        :returns: ``True`` if the received data is the same as the sent data
+        :rtype: bool
+
+        :raises BadUnitelwayChecksum: Bad UNI-TELWAY checksum
+        :raises RefusedUnitelwayMessage: X-WAY type code == ``0x22``
+        :raises UniteRequestFailed: Received ``0xFD``
+        :raises UnexpectedUniteResponse: The response code is not ``MIRROR``'s response code
+        """
+        print("client.py - mirror func: " + '[{}]'.format(','.join(f'{i:02X}' for i in data)), flush=True)
+        unite_query = [MIRROR, self.category_code, *data]
+        slave_address = self._unitelway_start[2]
+
+        resp = self.run_unite(slave_address, unite_query, text="MIRROR", debug=debug)
+
+        if not is_valid_response_code(MIRROR, resp[0]):
+            raise UnexpectedUniteResponse(get_response_code(MIRROR), resp[0])
+
+        return parse_mirror_result(resp[1:], data)
+
+    def get_unit_fault_history(self, debug=0):
+        """Get the link fault counters (character errors, frame errors, protocol errors)
+
+        ..NOTE: Each error counter can count up to 0x7FFF and then freezes. There is no overflow. The counters can be reset manually.
+
+        :param int debug: :doc:`Debug mode </debug_levels>`
+
+        :returns: quadrouple of:
+            * number of messages sent and not acknowledged,
+            * number of messages sent and rejected,
+            * number of messages received and not acknowledged,
+            * number of messages received and rejected.
+        :rtype: (int, int, int, int)
+        """
+        print("client.py - get unit fault history", flush=True)
+        unite_query = [READ_CPT, self.category_code]
+        slave_address = self._unitelway_start[2]
+
+        resp = self.run_unite(slave_address, unite_query, text="Get Unit Fault History", debug=debug)
+
+        if not is_valid_response_code(READ_CPT, resp[0]):
+            raise UnexpectedUniteResponse(get_response_code(READ_CPT), resp[0])
+
+        return parse_unit_fault_history(resp)
+
+    def get_stations_managed_by_master(self, debug=0):
+        """The Etat-Station request returns the number of stations connected to the master and their status.
+
+        :param int debug: :doc:`Debug mode </debug_levels>`
+
+        :returns: number of stations managed and their status (connected/unconnected as list of bool)
+        :rtype: (int, list[bool])
+        """
+        print("client.py - get number of stations managed by master", flush=True)
+        unite_query = [ETAT_STATION, self.category_code]
+        slave_address = self._unitelway_start[2]
+
+        resp = self.run_unite(slave_address, unite_query, text="Get Number of Stations managed by Master", debug=debug)
+
+        if not is_valid_response_code(ETAT_STATION, resp[0]):
+            raise UnexpectedUniteResponse(get_response_code(ETAT_STATION), resp[0])
+
+        return parse_stations_managed_by_master(resp)
+
+    # TODO CLEAR_CPT
+
+    ####################################
+    # FILE TRANSFERS
+    ####################################
+
+    # TODO OPEN DOWNLOAD
+
+    # TODO WRITE DOWNLOAD
+
+    # TODO CLOSE DOWNLOAD
+
+    # TODO OPEN UPLOAD
+
+    # TODO WRITE UPLOAD
+
+    # TODO CLOSE UPLOAD
+
+    ####################################
+    # SPECIFIC REQUESTS
+    ####################################
+
+    def get_available_bytes_in_ram(self, debug=0):
+        """Get the available bytes in RAM.
+
+        This request sends a ``Reading the Number of Bytes Available in the RAM`` request and returns the response.
+
+        :param int debug: :doc:`Debug mode </debug_levels>`
+        :returns: Available bytes in RAM
+        :rtype: int
+
+        :raises OperationInProgrammeArea: Operation in the programme area
+        :raises UniteRequestFailed: Received ``0xFD``
+        :raises UnexpectedAdditionalAwnserCode: Unexpected additional answer code
+        """
+        print("client.py - get_available_bytes_in_ram func: " + "Getting available bytes in RAM", flush=True)
+        unite_query = [READ_MEMORY_FREE, self.category_code, 0x47]
+        slave_address = self._unitelway_start[2]
+        r = self.run_unite(slave_address, unite_query, text="GET_AVAILABLE_BYTES_IN_RAM", debug=debug)
+
+        if not is_valid_response_code(READ_MEMORY_FREE, r[0]):
+            raise UnexpectedUniteResponse(get_response_code(READ_MEMORY_FREE), r[0])
+
+        return parse_available_bytes_in_ram(r)
+
+    # TODO OPEN DIRECTORY
+
+    # TODO DIRECTORY
+
+    # TODO CLOSE DIRECTORY
+
+    def write_message(self, message, debug=0):
+        # TODO untested
+        """Send a message by supervisor.
+
+        This request sends a ``Send Message by Supervisor`` request and returns the response.
+
+        :param str message: Message to send, 96 characters maximum
+        :param int debug: :doc:`Debug mode </debug_levels>`
+        :returns: Sending success
+        :rtype: bool
+
+        :raises UniteRequestFailed: Received ``0xFD``
+        """
+        print("client.py - send_message_by_supervisor func: " + "Sending message by supervisor", flush=True)
+
+        if len(message) > 96:
+            raise ValueError("The message is too long. It must be 96 characters maximum.")
+        num_lines = len(message) / 32
+
+        unite_query = [WRITE_MESSAGE, self.category_code, 0x4B, 0x00, num_lines]
+        unite_query.extend([ord(c) for c in message])
+        slave_address = self._unitelway_start[2]
+        r = self.run_unite(slave_address, unite_query, text="SEND_MESSAGE_BY_SUPERVISOR", debug=debug)
+
+        if not is_valid_response_code(WRITE_MESSAGE, r[:1]):
+            raise UnexpectedUniteResponse(get_response_code(WRITE_MESSAGE), r[0])
 
         return True

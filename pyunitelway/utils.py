@@ -72,7 +72,7 @@ def get_response_code(query_code):
     :rtype: Union[int, list[int]]
     """
     if query_code in RESPONSE_CODES.keys():
-        return RESPONSE_CODES[query_code]
+        return RESPONSE_CODES[query_code]  # TODO some requests have same request code but different response code
 
     return query_code + 0x30
 
@@ -89,9 +89,6 @@ def is_valid_response_code(query_code, resp_code):
     :returns: True if the code is valid
     :rtype: bool
     """
-    if type(RESPONSE_CODES[query_code]) == list:
-        return resp_code in RESPONSE_CODES[query_code]
-
     return resp_code == 0xFD or resp_code == get_response_code(query_code)
 
 
@@ -278,7 +275,7 @@ def read_byte(data):
 
     :param list[int] data: List of bytes
 
-    :returns: Read byte
+    :returns: Read byte as int
     :rtype: int
     """
     return data.pop(0)
@@ -291,7 +288,7 @@ def read_word(data):
 
     :param list[int] data: List of bytes
 
-    :returns: Read word
+    :returns: Read word as int
     :rtype: int
     """
     return data.pop(0) + data.pop(0) * 256
@@ -304,7 +301,7 @@ def read_dword(data):
 
     :param list[int] data: List of bytes
 
-    :returns: Read double word
+    :returns: Read double word as int
     :rtype: int
     """
     return data.pop(0) + data.pop(0) * 256 + data.pop(0) * 65536 + data.pop(0) * 16777216

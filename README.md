@@ -19,6 +19,7 @@ This library allows to:
 * [NUM 1060 - USE OF THE UNI-TE PROTOCOL - en-938914/0](https://shop.num.com/pi/Spezifische-Handbuecher/NUM-10xx-Power-Axium/Spezifische-Dokumentation/spezifische-dokumente-vers-e.html)
 * [NUM 1020/1040/1060 - UNI-TELWAY INTEGRATION MANUAL - 0101938880/2](https://shop.num.com/pi/Spezifische-Handbuecher/NUM-10xx-Power-Axium/Spezifische-Dokumentation/spezifische-dokumente-vers-e.html)
 * [NUM - AUTOMATIC CONTROL FUNCTION PROGRAMMING MANUAL LADDER LANGUAGE - 0101938846/8](https://shop.num.com/pi/Spezifische-Handbuecher/NUM-10xx-Power-Axium/NUMTool-Workshop/num-tool-workshop-handbcher.html)
+* [NUM 1060 - PC MODULE - 0101938928/2](https://cncmanual.com/num-1060-pc-module-manual/)
 
 ## How to use ?
 
