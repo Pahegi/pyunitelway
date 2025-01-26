@@ -787,3 +787,24 @@ class UnitelwayClient:
             raise UnexpectedUniteResponse(get_response_code(WRITE_MESSAGE), r[0])
 
         return True
+
+    def shutdown(self, debug=0):
+        # TODO untested
+        """Shutdown the PLC.
+
+        This request sends a ``Shutdown`` request and returns the response.
+
+        :param int debug: :doc:`Debug mode </debug_levels>`
+        :returns: Shutdown success
+        :rtype: bool
+
+        :raises UniteRequestFailed: Received ``0xFD``
+        """
+        print("client.py - shutdown func: " + "Shutting down the PLC", flush=True)
+        unite_query = [SHUTDOWN, self.category_code, 0x66, 0x00]
+        slave_address = self._unitelway_start[2]
+        r = self.run_unite(slave_address, unite_query, text="SHUTDOWN", debug=debug)
+
+        # TODO check multiple response bits, not just one
+        if not is_valid_response_code(SHUTDOWN, r[0]):
+            raise UnexpectedUniteResponse(get_response_code(SHUTDOWN), r[0])
