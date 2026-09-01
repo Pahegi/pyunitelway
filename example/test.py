@@ -1,5 +1,5 @@
 from pyunitelway import UnitelwayClient
-from pyunitelway.num import Object, Mode
+from pyunitelway.num_constants import Object, Mode
 
 debug = 0
 

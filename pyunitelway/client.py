@@ -7,10 +7,11 @@ import socket
 import time
 
 from pyunitelway.constants import *
-from pyunitelway.conversion import parse_mirror_result, parse_write_result, unwrap_unite_response, parse_unit_identification, parse_unit_status, parse_available_bytes_in_ram, parse_ladder_variable, parse_ladder_read_response, \
-    parse_unit_fault_history, parse_stations_managed_by_master
+from pyunitelway.conversion import unwrap_unite_response
+from pyunitelway.unite_responses import parse_mirror_result, parse_write_result, parse_unit_identification, parse_unit_status, parse_available_bytes_in_ram, parse_unit_fault_history, parse_stations_managed_by_master, parse_ladder_variable, \
+    parse_ladder_read_response
 from pyunitelway.errors import UnexpectedUniteResponse
-from pyunitelway.num import ladder_size
+from pyunitelway.num_constants import ladder_size
 from pyunitelway.utils import compute_bcc, duplicate_dle, format_bytearray, format_hex_list, get_response_code, is_valid_response_code, sublist_in_list, delete_dle, read_byte, read_int
 
 
