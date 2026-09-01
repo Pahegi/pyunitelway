@@ -4,6 +4,7 @@
 import time
 
 from .constants import *
+from .errors import MalformedUnitelwayResponse
 
 
 def wait_ms(delay):
@@ -153,32 +154,62 @@ def split_list_n(list, n):
 
 
 def compute_response_length(unitelway):
-    """Compute a UNI-TELWAY response message length, skipping duplicated ``<DLE>`` characters.
+    """Compute the total on-wire length of a UNI-TELWAY frame, in raw bytes.
 
-    ``<DLE>`` bytes (``0x10``) are duplicated if:
+    Walks the received bytes from the header ``<DLE><STX>`` and accounts for the
+    ``<DLE>`` transparency padding, as defined in the Schneider UNI-TELWAY
+    reference manual 35000789, sections 3.5 and 3.12:
 
-    * the message length (4th byte) equals ``<DLE>``
-    * or ``<DLE>`` is contained in the data section.
+    * the frame is ``<DLE><STX><addr><length><data><BCC>``
+    * ``<addr>`` is never duplicated
+    * ``<length>`` counts the ``<data>`` bytes before padding, and is itself
+      duplicated on the wire if it equals ``<DLE>``
+    * every ``<DLE>`` in ``<data>`` is duplicated
+    * ``<BCC>`` is never duplicated
 
-    The length is calculated before duplicating ``<DLE>``'s.
-    
-    :param list[int] unitelway: UNI-TELWAY bytes
-    :returns: Length of the UNI-TELWAY response, without duplicated ``<DLE>``'s
+    The returned length includes the header, all padding ``<DLE>``'s and the
+    ``<BCC>``, so ``unitelway[:compute_response_length(unitelway)]`` is exactly
+    one frame, no matter what trails it in the receive buffer (e.g. the next
+    ``<DLE><ENQ><addr>`` polling sequence).
+
+    :param list[int] unitelway: Received bytes, starting at the header ``<DLE>``
+
+    :returns: Number of raw bytes occupied by the frame
     :rtype: int
+
+    :raises MalformedUnitelwayResponse: The buffer does not start with
+        ``<DLE><STX>``, the ``<length>`` field is out of range, a ``<DLE>`` in
+        ``<data>`` is not duplicated, or the buffer ends before the frame does
     """
-    i = 3
+    if len(unitelway) < 6:
+        raise MalformedUnitelwayResponse(f"need at least 6 bytes for a frame, got {len(unitelway)}")
+    if unitelway[0] != DLE or unitelway[1] != STX:
+        raise MalformedUnitelwayResponse("frame does not start with <DLE><STX>")
 
-    length = unitelway[i]
-    len_count = 0
-
-    i += 1
-    len_count += 1
-    while len_count <= length:
-        if unitelway[i] == DLE & unitelway[i + 1] == DLE:
-            len_count -= 1
-        len_count += 1
+    length = unitelway[3]
+    i = 4
+    if length == DLE:
+        # <length> equal to <DLE> is duplicated on the wire (manual 35000789, 3.5)
+        if unitelway[i] != DLE:
+            raise MalformedUnitelwayResponse("<length> equals <DLE> but is not duplicated")
         i += 1
+    if not 1 <= length <= 134:
+        # 134 = maximum NPDU size (manual 35000789, 3.12)
+        raise MalformedUnitelwayResponse(f"<length> {length} out of range [1..134]")
 
+    for _ in range(length):
+        if i >= len(unitelway):
+            raise MalformedUnitelwayResponse("buffer ends inside <data>")
+        if unitelway[i] == DLE:
+            # <DLE> in <data> is duplicated on the wire (manual 35000789, 3.5)
+            if i + 1 >= len(unitelway) or unitelway[i + 1] != DLE:
+                raise MalformedUnitelwayResponse("<DLE> in <data> is not duplicated")
+            i += 2
+        else:
+            i += 1
+
+    if i >= len(unitelway):
+        raise MalformedUnitelwayResponse("buffer ends before <BCC>")
     return i + 1
 
 

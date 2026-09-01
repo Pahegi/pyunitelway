@@ -5,7 +5,12 @@ class UnitelwayError(Exception):
 
 class BadUnitelwayChecksum(UnitelwayError):
     def __init__(self, expected, got):
-        super().__init__(self, f"Bad UNI-TELWAY checksum: expected {expected}, got {got}")
+        super().__init__(f"Bad UNI-TELWAY checksum: expected 0x{expected:02X}, got 0x{got:02X}")
+
+
+class MalformedUnitelwayResponse(UnitelwayError):
+    def __init__(self, message):
+        super().__init__(f"Malformed UNI-TELWAY response: {message}")
 
 
 class RefusedUnitelwayMessage(UnitelwayError):
