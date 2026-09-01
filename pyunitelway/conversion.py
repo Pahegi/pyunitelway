@@ -1,13 +1,6 @@
-"""UNI-TELWAY response unwrapping functions.
+"""UNI-TELWAY response unwrapping: frame -> X-WAY NPDU -> UNI-TE report.
 
-Unwraps a received buffer down to the UNI-TE response bytes:
-UNI-TELWAY frame ``<DLE><STX><addr><length><data><BCC>`` -> X-WAY NPDU -> UNI-TE report.
-
-References:
-
-* Schneider UNI-TELWAY reference manual 35000789: link layer frame and
-  ``<DLE>`` transparency (sections 3.5, 3.12), NPDU format (section 4.2)
-* NUM 1060 "Use of the UNI-TE protocol" 938914: report format (section 2.2)
+References: Schneider 35000789 (frame §3.5/§3.12, NPDU §4.2), NUM 938914 (report §2.2).
 """
 
 from .errors import BadUnitelwayChecksum, MalformedUnitelwayResponse, RefusedUnitelwayMessage, UniteRequestFailed
@@ -15,14 +8,9 @@ from .utils import check_unitelway, compute_bcc, compute_response_length, delete
 
 
 def unitelway_to_xway(response):
-    """Unwrap the X-WAY message from a UNI-TELWAY frame.
+    """Unwrap the X-WAY NPDU from one de-duplicated UNI-TELWAY frame.
 
-    The input must be exactly one **de-duplicated** UNI-TELWAY frame
-    (``<DLE><STX><addr><length><data><BCC>``): 4 header bytes, then the data
-    (the X-WAY NPDU), then the checksum.
-
-    :param list[int] response: De-duplicated UNI-TELWAY frame
-
+    :param list[int] response: De-duplicated frame ``<DLE><STX><addr><length><data><BCC>``
     :returns: X-WAY message (NPDU)
     :rtype: list[int]
     """
@@ -32,21 +20,14 @@ def unitelway_to_xway(response):
 def xway_to_unite(response):
     """Unwrap the UNI-TE message from an X-WAY message.
 
-    The first NPDU byte is the service code (manual 35000789, section 4.2):
-
-    * ``0x20``: standard service format — code + 5 address bytes (``Net``,
-      ``Sta``, ``Gate``, ``Ext1``, ``Ext2``), then the UNI-TE bytes
-    * ``0x00``: simplified service format — code only, then the UNI-TE bytes
-    * ``0x22``: refused UNI-TELWAY message
-    * anything else is reserved, and treated as erroneous
+    Service codes per 35000789 §4.2: ``0x20`` standard (code + 5 address bytes),
+    ``0x00`` simplified (code only), ``0x22`` refused, others reserved.
 
     :param list[int] response: X-WAY message
-
     :returns: UNI-TE message
     :rtype: list[int]
-
-    :raises RefusedUnitelwayMessage: The X-WAY service code is ``0x22``
-    :raises MalformedUnitelwayResponse: The X-WAY service code is reserved/unknown
+    :raises RefusedUnitelwayMessage: Service code ``0x22``
+    :raises MalformedUnitelwayResponse: Reserved/unknown service code
     """
     code = response[0]
     if code == 0x22:
@@ -61,26 +42,17 @@ def xway_to_unite(response):
 def unwrap_unite_response(response):
     """Unwrap the UNI-TE response from a received buffer.
 
-    It:
-
-    * locates the end of the frame from the ``<length>`` field, so trailing
-      bytes in the receive buffer (e.g. the master's next ``<DLE><ENQ><addr>``
-      polling sequence) are ignored
-    * checks the frame checksum — on the raw bytes, because the BCC is
-      computed after ``<DLE>`` padding (manual 35000789, section 3.5)
-    * deletes the duplicated ``<DLE>``'s
-    * unwraps the X-WAY message, then the UNI-TE message
-    * checks the UNI-TE answer code
+    Truncates the buffer to one frame (trailing poll bytes ignored), checks the
+    BCC on the raw padded bytes (35000789 §3.5), de-duplicates ``<DLE>``'s, then
+    unwraps X-WAY and UNI-TE.
 
     :param list[int] response: Received bytes, starting at the header ``<DLE>``
-
     :returns: UNI-TE bytes
     :rtype: list[int]
-
-    :raises MalformedUnitelwayResponse: The buffer does not hold one complete, well-formed frame
-    :raises BadUnitelwayChecksum: The frame checksum does not match
-    :raises RefusedUnitelwayMessage: The X-WAY service code is ``0x22``
-    :raises UniteRequestFailed: The UNI-TE answer code is ``0xFD`` (negative report)
+    :raises MalformedUnitelwayResponse: No complete, well-formed frame
+    :raises BadUnitelwayChecksum: Checksum mismatch
+    :raises RefusedUnitelwayMessage: X-WAY service code ``0x22``
+    :raises UniteRequestFailed: UNI-TE answer code ``0xFD`` (negative report)
     """
     frame = response[:compute_response_length(response)]
 
@@ -93,7 +65,7 @@ def unwrap_unite_response(response):
 
     unite_bytes = xway_to_unite(xway_bytes)
 
-    # Negative report (938914, section 2.2)
+    # negative report (938914 §2.2)
     if unite_bytes[0] == 0xFD:
         raise UniteRequestFailed()
 

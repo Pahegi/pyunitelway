@@ -1,15 +1,7 @@
 """Frame-level tests for the UNI-TELWAY response unwrapping.
 
-Wire vectors come from:
-
-* Schneider UNI-TELWAY reference manual 35000789, sections 6.2/6.3
-  (mirror exchange examples, with valid checksums)
-* a response captured from the NUM 1060 (docs/source/debug_levels.rst)
-
-The frame rules under test (manual 35000789, sections 3.5/3.12):
-``<addr>`` never duplicated, ``<length>`` duplicated iff equal to ``<DLE>``,
-every ``<DLE>`` in ``<data>`` duplicated, ``<BCC>`` never duplicated and
-computed over the padded bytes.
+Wire vectors: manual 35000789 §6.2/§6.3 mirror examples and a response
+captured from the NUM 1060 (docs/source/debug_levels.rst).
 """
 
 import pytest
@@ -25,20 +17,20 @@ from pyunitelway.utils import compute_bcc, compute_response_length, delete_dle
 
 DLE, STX, ENQ = 0x10, 0x02, 0x05
 
-# Manual 35000789 section 6.3: V1 mirror request on slave 1, data DLE duplicated
+# 35000789 §6.3: mirror request with duplicated data DLE
 MIRROR_REQUEST = [0x10, 0x02, 0x01, 0x05, 0x00, 0xFA, 0x01, 0x10, 0x10, 0x04, 0x37]
-# Manual 35000789 section 6.3: the matching mirror answer
+# 35000789 §6.3: the matching mirror answer
 MIRROR_ANSWER = [0x10, 0x02, 0x01, 0x04, 0x00, 0xFB, 0x10, 0x10, 0x04, 0x36]
-# Manual 35000789 section 6.2: mirror answer without DLE in data
+# 35000789 §6.2: mirror answer without DLE in data
 MIRROR_ANSWER_PLAIN = [0x10, 0x02, 0x01, 0x03, 0x00, 0xFB, 0x05, 0x16]
-# Captured NUM 1060 response (docs/source/debug_levels.rst): READ_INTERNAL_BIT answer
+# captured NUM 1060 READ_INTERNAL_BIT answer (docs/source/debug_levels.rst)
 NUM_RESPONSE = [0x10, 0x02, 0x02, 0x09, 0x20, 0x00, 0xFE, 0x00, 0x00, 0x00, 0x30, 0x00, 0x00, 0x6B]
-# The master's polling sequence, as it may trail a frame in the receive buffer
+# master polling sequence that may trail a frame in the receive buffer
 TRAILING_POLL = [DLE, ENQ, 0x02]
 
 
 def wire_frame(addr, npdu):
-    """Independently build the on-wire frame for an NPDU, following 35000789 3.5/3.12."""
+    """Independent on-wire frame builder per 35000789 §3.5/§3.12."""
     frame = [DLE, STX, addr, len(npdu)]
     if len(npdu) == DLE:
         frame.append(DLE)
@@ -51,7 +43,6 @@ def wire_frame(addr, npdu):
 
 
 def test_wire_frame_matches_manual_vectors():
-    # the test helper itself must reproduce the manual's example frames
     assert wire_frame(0x01, [0x00, 0xFA, 0x01, 0x10, 0x04]) == MIRROR_REQUEST
     assert wire_frame(0x01, [0x00, 0xFB, 0x10, 0x04]) == MIRROR_ANSWER
     assert wire_frame(0x01, [0x00, 0xFB, 0x05]) == MIRROR_ANSWER_PLAIN
@@ -73,7 +64,7 @@ class TestComputeResponseLength:
             assert compute_response_length(frame + TRAILING_POLL) == len(frame)
 
     def test_length_equal_to_dle_is_duplicated(self):
-        # 16 data bytes -> <length> = 0x10 = <DLE>, duplicated on the wire
+        # 16 data bytes -> <length> = <DLE>, duplicated on the wire
         npdu = [0x20, 0x00, 0xFE, 0x00, 0x00, 0x00] + list(range(0x30, 0x3A))
         assert len(npdu) == DLE
         frame = wire_frame(0x01, npdu)
@@ -81,14 +72,13 @@ class TestComputeResponseLength:
         assert compute_response_length(frame + TRAILING_POLL) == len(frame)
 
     def test_consecutive_dles_in_data(self):
-        # two and three consecutive <DLE> data bytes -> 4 and 6 wire bytes
         for run in (2, 3):
             npdu = [0x20, 0x00, 0xFE, 0x00, 0x00, 0x00, 0x66] + [DLE] * run
             frame = wire_frame(0x01, npdu)
             assert compute_response_length(frame + TRAILING_POLL) == len(frame)
 
     def test_bcc_equal_to_dle_not_duplicated(self):
-        # NPDU chosen so that the BCC is 0x10: 0x16B + 0xA5 = 0x210 -> 0x10
+        # NPDU chosen so that BCC = 0x10
         frame = wire_frame(0x02, [0x20, 0x00, 0xFE, 0x00, 0x00, 0x00, 0x30, 0x00, 0xA5])
         assert frame[-1] == DLE
         assert compute_response_length(frame + TRAILING_POLL) == len(frame)
@@ -126,7 +116,7 @@ class TestUnwrapUniteResponse:
         assert unwrap_unite_response(NUM_RESPONSE + TRAILING_POLL) == [0x30, 0x00, 0x00]
 
     def test_simplified_service_format(self):
-        # manual 35000789 section 6.3 slave answer: NPDU code 0x00, mirror answer FB 10 04
+        # 35000789 §6.3: simplified NPDU (code 0x00)
         assert unwrap_unite_response(list(MIRROR_ANSWER)) == [0xFB, 0x10, 0x04]
 
     def test_consecutive_dles_in_unite_data(self):
