@@ -32,6 +32,7 @@ This library allows to:
    ./client.rst
    ./utils.rst
    ./conversion.rst
+   ./unite_responses.rst
 
 How to use ?
 ============

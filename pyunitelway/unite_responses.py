@@ -1,7 +1,7 @@
 from pyunitelway.constants import LADDER_REQUEST
 from pyunitelway.errors import UnexpectedAdditionalAwnserCode, OperationInProgrammeArea
 from pyunitelway.num_constants import Mode, symbol_bounds
-from pyunitelway.utils import delete_dle, read_byte, read_dword, read_word, read_bytes, read_int
+from pyunitelway.utils import read_byte, read_dword, read_word, read_bytes, read_int
 
 
 def parse_mirror_result(received_data, sent_data):
@@ -28,7 +28,7 @@ def parse_unit_identification(received_data):
     :returns: Unit identification dict containing "product_type", "subtype", "product_version" and "text".
     :rtype: dict[str: Any]
     """
-    resp = delete_dle(received_data)
+    resp = list(received_data)
 
     data = {}
 
@@ -64,7 +64,7 @@ def parse_unit_status(received_data):
     :returns: Unit status dict
     :rtype: dict[str: Any]
     """
-    r = delete_dle(received_data)
+    r = list(received_data)
 
     _answer_code = read_byte(r)
 
@@ -188,26 +188,29 @@ def parse_unit_status(received_data):
 
 
 def parse_available_bytes_in_ram(received_data):
-    """Parse the ``Get available bytes in RAM`` request.
+    """Parse the ``Read-Memory-Free`` answer (938914, section 4.15).
 
-    :param list[int] received_data: Received data in the response
+    Answer layout: answer code ``H'F5'`` / additional answer code ``H'77'`` /
+    status (1 byte) / number of available bytes (1 long word, low byte first).
+
+    :param list[int] received_data: UNI-TE answer bytes, starting at the answer code
 
     :returns: Available bytes in RAM
     :rtype: int
 
-    :raises OperationInProgrammeArea: Operation in the programme area
-    :raises UnexpectedAdditionalAwnserCode: Unexpected additional answer code
+    :raises UnexpectedAdditionalAwnserCode: The additional answer code is not ``H'77'``
+    :raises OperationInProgrammeArea: Status ``H'02'``: operation in the programme area
     """
-    r = delete_dle(received_data)
+    r = list(received_data)
 
-    if not r[1] == 0x77:
+    if r[1] != 0x77:
         raise UnexpectedAdditionalAwnserCode(0x77, r[1])
 
     status = r[2]
     if status == 0x02:
         raise OperationInProgrammeArea()
 
-    return read_word(r[-4:])
+    return read_dword(r[3:7])
 
 
 def parse_ladder_variable(variable, debug=0):
@@ -278,9 +281,9 @@ def parse_ladder_read_response(response, size):
     :returns: Value of the ladder variable
     :rtype: Union[int, bool]
     """
-    resp = delete_dle(response)
+    resp = list(response)
     resp = resp[2:]  # first two characters are response code and object address
-    if chr(0) <= size <= chr(7):
+    if "0" <= size <= "7":
         read_byte(resp)
         return (resp[0] >> int(size)) & 1
     else:
@@ -310,7 +313,7 @@ def parse_unit_fault_history(response):
         * number of messages received and rejected.
     :rtype: (int, int, int, int)
     """
-    resp = delete_dle(response)
+    resp = list(response)
     r = resp[1:]
     return read_word(r), read_word(r), read_word(r), read_word(r)
 
@@ -323,7 +326,7 @@ def parse_stations_managed_by_master(response):
     :returns: number of stations managed and their status (connected/unconnected as list of bool)
     :rtype: (int, list[bool])
     """
-    resp = delete_dle(response)
+    resp = list(response)
     r = resp[1:]
     num_stations = read_byte(r)
     # TODO create list of bits
