@@ -118,6 +118,9 @@ class FakeSocket:
             return self.chunks.pop(0)
         raise socket.timeout()
 
+    def sendall(self, data):
+        pass
+
 
 class TestIsMyTurnToTalk:
     def test_returns_once_our_address_is_polled(self):

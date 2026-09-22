@@ -1,369 +1,198 @@
-"""UNI-TELWAY client module.
-Specifically modified for NUM 1060 Series II Controller
-as described in the manual "NUM 1060 - USE OF THE UNI-TE PROTOCOL - en-938914/0"
+"""UNI-TELWAY slave client for the NUM 1060 Series II.
+
+Framing per Schneider 35000789, requests per NUM 938914 (UNI-TE) and 938846 §15 (ladder objects).
 """
 
+import logging
 import socket
 import time
 
 from pyunitelway.constants import *
 from pyunitelway.conversion import unwrap_unite_response
-from pyunitelway.unite_responses import parse_mirror_result, parse_write_result, parse_unit_identification, parse_unit_status, parse_available_bytes_in_ram, parse_unit_fault_history, parse_stations_managed_by_master, parse_ladder_variable, \
-    parse_ladder_read_response, parse_shutdown_result
-from pyunitelway.errors import UnexpectedUniteResponse, NoPollingWindow
-from pyunitelway.utils import compute_bcc, duplicate_dle, format_bytearray, format_hex_list, get_response_code, is_valid_response_code, sublist_in_list, delete_dle, read_byte, read_int, check_specific_answer, ladder_specific_byte
+from pyunitelway.errors import NoPollingWindow, UnexpectedUniteResponse
+from pyunitelway.unite_responses import (
+    parse_available_bytes_in_ram,
+    parse_ladder_read_response,
+    parse_ladder_variable,
+    parse_mirror_result,
+    parse_shutdown_result,
+    parse_stations_managed_by_master,
+    parse_unit_fault_history,
+    parse_unit_identification,
+    parse_unit_status,
+    parse_write_result,
+)
+from pyunitelway.utils import (
+    check_specific_answer,
+    compute_bcc,
+    duplicate_dle,
+    format_hex_list,
+    get_response_code,
+    is_valid_response_code,
+    ladder_specific_byte,
+    sublist_in_list,
+)
+
+log = logging.getLogger(__name__)
 
 
 class UnitelwayClient:
-    """UNI-TELWAY slave client. To send UNI-TELWAY messages to master PLC.
-    The sender PC is considered a slave, and the contacted PLC is the master.
+    """UNI-TELWAY slave client: this PC is a slave, the NUM 1060 is the master.
 
-    .. NOTE::
-        On the NUM 1060 Series II UC SII in Darmstadt the master polls exactly one link address,
-        ``0x01`` (checked with ``example/listen.py``, 2026-09-22), and answers with:
+    On the NUM 1060 Series II UC SII in Darmstadt the master polls one link address, ``0x01``
+    (``example/listen.py``), and answers with the defaults below.
 
-        * slave_address = 0x01
-        * category_code = 0x00
-        * xway_network = 0x00
-        * xway_station = 0xFE
-        * xway_gate = 0x00
-        * xway_ext1 = 0x00
-        * xway_ext2 = 0x00
-
-    .. WARNING::
-        Make sure that the slave address you chose for your PC is not already used by a slave PLC.
-    
-    :param int slave_address: Client slave address
-    :param int category_code: UNI-TE category code (between 0 and 7)
-    :param int xway_network: X-WAY network value
-    :param int xway_station: X-WAY station value
-    :param int xway_gate: X-WAY gate value
-    :param int xway_ext1: X-WAY ext1 value (5-6 levels addressing)
-    :param int xway_ext2: X-WAY ext2 value (5-6 levels addressing)
-    :param bool VPN_Mode : Switch On if using VPN
+    :param int slave_address: Our link address
+    :param int category_code: UNI-TE category code (0-7)
+    :param int xway_network: X-WAY network
+    :param int xway_station: X-WAY station
+    :param int xway_gate: X-WAY gate
+    :param int xway_ext1: X-WAY ext1 (5/6-level addressing, 35000789 p.55)
+    :param int xway_ext2: X-WAY ext2
+    :param bool VPN_Mode: Skip the polling window, the ACK and the answer timeout (tunnelled links only)
     """
 
     def __init__(self, slave_address=0x01, category_code=0x00, xway_network=0x00, xway_station=0xFE, xway_gate=0x00, xway_ext1=0x00, xway_ext2=0x00, VPN_Mode=False):
-        """The constructor.
-        
-        ``ext1`` and ``ext2`` are used for 5 and 6-levels addressing. See: https://download.schneider-electric.com/files?p_enDocType=User+guide&p_File_Name=35000789_K06_000_00.pdf&p_Doc_Ref=35000789K01000, p.55 for the format.
-        """
-        self._unitelway_start = [
-            DLE, STX,
-            slave_address
-        ]
-
-        self._xway_start = [
-            0x20,  # Type: standard
-            xway_network,
-            xway_station,
-            xway_gate,
-            xway_ext1,
-            xway_ext2
-        ]
-
+        self._unitelway_start = [DLE, STX, slave_address]
+        self._xway_start = [0x20, xway_network, xway_station, xway_gate, xway_ext1, xway_ext2]  # 0x20: standard NPDU
         self.category_code = category_code
         self.link_address = slave_address
         self.VPN_Mode = VPN_Mode
+        self.socket = None
 
-    # ------- LIBRARY SPECIFIC FUNCTIONS -------
+    # ------- socket -------
+
     def connect_socket(self, ip, port, connection_query=None):
-        """Connect to the USR-TCP232-306 adapter.
+        """Connect to the TCP-serial adapter (USR-TCP232-306 in TCP server mode).
 
-        A *connection query* is also needed to connect. Without this, the client is not able to talk to the PLC. But we
-        still don't know how this query is built.
-
-        If the argument ``conection_query`` is ``None`` (default), no connection query is executed.
-
-        :param string ip: Adapter IPv4
+        :param str ip: Adapter IPv4
         :param int port: Adapter port
-        :param list[int] connection_query: *Connection query* bytes
+        :param list[int] connection_query: Optional bytes to send right after connecting
         """
-        print("Connecting to ip : " + ip + " on port : " + str(port))
-        self.socket = socket.socket(socket.AF_INET)
-        self.socket.settimeout(2)
-        self.socket.connect((ip, port))
+        log.info("connecting to %s:%d", ip, port)
+        self.socket = socket.create_connection((ip, port), timeout=2)
         self.socket.settimeout(None)
-
         if connection_query is not None:
-            self._send_connection_query(connection_query)
-        print("Connected to ip : " + ip + " on port : " + str(port))
+            self._unitelway_query(connection_query, "connection query")
+        log.info("connected to %s:%d", ip, port)
 
-    def _send_connection_query(self, connection_query):
-        """Send the *connection query* on the socket.
-
-        See ``connect_socket`` for more information.
-
-        :param list[int] connection_query: *Connection query*
-        """
-        print("Sending connection query", connection_query)
-        self._unitelway_query(connection_query, "Connecting to USR-TCP232-306 adapter")
-
-    def disconnect_socket(self, debug=0):
-        print("Disconnecting from socket")
-
+    def disconnect_socket(self):
+        """Close the socket."""
+        log.info("disconnecting")
         try:
             self.socket.close()
-            if debug >= 2:
-                print("Socket is closed")
+        except Exception:
+            log.warning("socket did not close cleanly", exc_info=True)
 
-        except:
-            print("Socket is not closed")
+    # ------- framing (35000789 §3.5, §3.12, §4.2) -------
 
     def _unite_to_xway(self, unite_bytes):
-        """Wrap UNI-TE request into an X-WAY request.
-        
-        It just adds X-WAY header at the beginning. See this `UNI-TELWAY example`_ page 55 for the format.
-
-        .. _`UNI-TELWAY example`: https://download.schneider-electric.com/files?p_enDocType=User+guide&p_File_Name=35000789_K06_000_00.pdf&p_Doc_Ref=35000789K01000
-
-        :param list[int] unite_bytes: UNI-TE request bytes
-        
-        :returns: X-WAY request bytes
-        :rtype: list[int]
-        """
-        print("client.py - _unite_to_xway func: " + '[{}]'.format(','.join(f'{i:02X}' for i in unite_bytes)), flush=True)
-        xway_bytes = []
-        for b in self._xway_start:
-            xway_bytes.append(b)
-
-        xway_bytes += unite_bytes
-        return xway_bytes
+        """Prepend the X-WAY header."""
+        return list(self._xway_start) + list(unite_bytes)
 
     def _xway_to_unitelway(self, xway_bytes):
-        """Wrap X-WAY request into a UNI-TELWAY request.
-
-        It:
-
-        * appends the header at the beginning
-        * compute the length
-        * duplicate ``<DLE>``'s
-        * add the checksum at the end
-
-        :param list[int] xway_bytes: X-WAY request bytes
-
-        :returns: UNI-TELWAY request bytes
-        :rtype: list[int]
-        """
-        print("client.py - _xway_to_unitelway func: " + '[{}]'.format(','.join(f'{i:02X}' for i in xway_bytes)), flush=True)
-        unitelway_bytes = []
-        for b in self._unitelway_start:
-            unitelway_bytes.append(b)
-
-        # Length
+        """Frame an X-WAY message: header, length (doubled if ``DLE``), data with ``DLE``s doubled, BCC."""
+        frame = list(self._unitelway_start)
         length = len(xway_bytes)
-        # Duplicate DLE if length == DLE
         if length == DLE:
-            unitelway_bytes.append(DLE)
-        unitelway_bytes.append(len(xway_bytes))
-
-        unitelway_data_start = len(unitelway_bytes)
-
-        unitelway_bytes += xway_bytes
-
-        duplicate_dle(unitelway_bytes, unitelway_data_start)
-
-        bcc = compute_bcc(unitelway_bytes)
-        unitelway_bytes.append(bcc)
-
-        return unitelway_bytes
+            frame.append(DLE)
+        frame.append(length)
+        data_start = len(frame)
+        frame += list(xway_bytes)
+        duplicate_dle(frame, data_start)
+        frame.append(compute_bcc(frame))
+        return frame
 
     def _unite_to_unitelway(self, unite_bytes):
-        """Unwrap UNI-TE request into a UNI-TELWAY request.
+        """Wrap a UNI-TE request into a UNI-TELWAY frame."""
+        return self._xway_to_unitelway(self._unite_to_xway(unite_bytes))
 
-        It chains ``unite_to_xway`` and ``xway_to_unitelway``.
+    def _unitelway_query(self, query, text=""):
+        """Send raw UNI-TELWAY bytes."""
+        log.debug("tx %s%s", f"{text} " if text else "", format_hex_list(query))
+        self.socket.sendall(bytearray(query))
 
-        :param list[int] unite_bytes: UNI-TE request bytes
+    def _unite_query(self, query, text=""):
+        """Send a UNI-TE request."""
+        self._unitelway_query(self._unite_to_unitelway(query), text)
 
-        :returns: UNI-TELWAY request bytes
-        :rtype: list[int]
+    # ------- receive -------
+
+    def _wait_unite_response(self, timeout=TIMEOUT_SEC):
+        """Wait for a ``<DLE><STX>`` frame addressed to us, skipping polls (35000789 §3.6).
+
+        :returns: Received bytes from the frame start, or ``None`` on timeout
         """
-        print("client.py - _unite_to_unitelway func: " + '[{}]'.format(','.join(f'{i:02X}' for i in unite_bytes)), flush=True)
-        xway = self._unite_to_xway(unite_bytes)
-        return self._xway_to_unitelway(xway)
-
-    def _unitelway_query(self, query, text="", debug=0):
-        """Send a UNI-TELWAY request on the socket.
-
-        .. WARNING::
-
-            The UNI-TELWAY request has to be already built
-
-        :param list[int] query: UNI-TELWAY request bytes
-        :param str text: Text to print in debug mode
-        :param int debug: :doc:`Debug mode </debug_levels>`
-        """
-        print("client.py - _unitelway_query func: " + '[{}]'.format(','.join(f'{i:02X}' for i in query)), flush=True)
-        bytes = bytearray(query)
-        if debug >= 1:
-            print(f"------------------ {text} ----------------")
-            print(f"[{time.time()}] Sending: {format_bytearray(bytes)}")
-
-        n = self.socket.send(bytes)
-
-        # if debug:
-        #    print(f"[{time.time()}] Sent {n} bytes.")
-
-    def _unite_query(self, query, text="", debug=0):
-        """Send a UNI-TE request on the socket.
-
-        .. NOTE::
-
-            All the UNI-TELWAY request is printed
-
-        :param list[int] query: UNI-TE request bytes
-        :param str text: Text to print in debug mode
-        :param int debug: :doc:`Debug mode </debug_levels>`
-        """
-        print("client.py - _unite_query func: " + '[{}]'.format(','.join(f'{i:02X}' for i in query)), flush=True)
-        unitelway = self._unite_to_unitelway(query)
-        self._unitelway_query(unitelway, text, debug)
-
-    def _wait_unite_response(self, timeout=TIMEOUT_SEC, debug=0):
-        """Wait until a UNI-TE response is received.
-
-        This function works with ``unite_query_until_response()``.
-
-        The master PLC regularly sends ``<DLE> <ENQ> XX`` enquery bytes. These bytes can be sent between a request from a slave
-        and the response, that's why we need to wait our response.
-
-        This function regularly reads 3 bytes on the socket while it encounters ``<DLE> <ENQ>``.
-        If it receives ``<DLE> <STX>``, it reads the next 256 bytes, and return the result. 
-
-        If the timeout is reached, it returns ``None``, then ``unite_query_until_response`` will send again the request.
-
-        :param float timeout: Timeout before sending again the request
-
-        :returns: Response bytes if the timeout is not reached.
-            None otherwise
-        :rtype: list[int] or None
-        """
-        print("client.py - _wait_unite_response func: " + "Waiting for response", flush=True)
         start = time.time()
-        end = start
         buf = []
         while True:
             r = self.socket.recv(3)
-            if (not r) or (not buf and len(r) == 1 and r[0] == 0x15):
-                raise Exception("Nack received ! Force quitting... (" + str(r) + ")")
-            if debug >= 2:
-                print("recv =>", format_hex_list(r))
-            buf.extend(b for b in r)
+            if (not r) or (not buf and len(r) == 1 and r[0] == NAK):
+                raise Exception(f"NAK received ({r!r})")
+            log.debug("rx %s", format_hex_list(r))
+            buf.extend(r)
 
-            # Delete <DLE> <ENQ> <nb>
-            res = sublist_in_list(buf, [DLE, ENQ])
-            is_in = res[0]
-            index = res[1]
-            if is_in:
-                # Delete three elements starting at index
-                for _ in range(3):
-                    if index < len(buf):
-                        buf.pop(index)
+            found, index = sublist_in_list(buf, [DLE, ENQ])  # TODO B3: may hit frame data
+            if found:
+                del buf[index:index + 3]
 
-            # Find <DLE> <STX> sequence
-            tmp = sublist_in_list(buf, [DLE, STX])
-            dle_stx_ok = tmp[0]
-            dle_stx_idx = tmp[1]
-
-            if dle_stx_ok:
-                buf.extend(b for b in self.socket.recv(1))
-                received_link_addr = buf[dle_stx_idx + 2]
-                if received_link_addr == self.link_address:
+            found, idx = sublist_in_list(buf, [DLE, STX])
+            if found:
+                buf.extend(self.socket.recv(1))
+                if buf[idx + 2] == self.link_address:
                     break
 
-            if not self.VPN_Mode:
-                end = time.time()
-                if end - start >= timeout:
-                    print("client.py - _wait_unite_response func: " + "Timeout reached", flush=True)
-                    return None
+            if not self.VPN_Mode and time.time() - start >= timeout:
+                log.warning("no answer within %.1f s", timeout)
+                return None
 
-        buf = buf[dle_stx_idx:]
-        buf.extend(b for b in self.socket.recv(256))
-        # print("client.py - _wait_unite_response func: " + '[{}]'.format(','.join(f'{i:02X}'for i in buf)), flush=True)
+        buf = buf[idx:]
+        buf.extend(self.socket.recv(256))
         return buf
 
-    def _unite_query_until_response(self, address, query, timeout=TIMEOUT_SEC, text="", debug=0):
-        """Send a UNI-TE request until it receives a valid response.
+    def _unite_query_until_response(self, address, query, timeout=TIMEOUT_SEC, text=""):
+        """Send a request in a polling window and wait for its answer, resending on timeout.
 
-        This function works with ``wait_unite_response()``.
-
-        If ``wait_unite_response`` returns ``None`` (reached timeout), it sends the request again.
-
-        .. NOTE::
-
-            All the UNI-TELWAY request is printed
-
-        :param list[int] query: UNI-TE request
-        :param float timeout: Timeout before sending again the request
-        :param str text: Text to print in debug mode
-        :param int debug: :doc:`Debug mode </debug_levels>`
-
-        :returns: UNI-TELWAY response bytes
-        :rtype: list[int]
+        :returns: Raw UNI-TELWAY answer bytes
         """
-        print("client.py - _unite_query_until_response func: " + '[{}]'.format(','.join(f'{i:02X}' for i in query)), flush=True)
         r = None
         while r is None:
-            # Used with VPN
-            if self.VPN_Mode:
-                self._unite_query(query, text, debug)
-                r = self._wait_unite_response(timeout, debug)
-            # Used in local / must wait polling from automate
-            else:
-                if self.is_my_turn_to_talk(address, debug):
-                    self._unite_query(query, text, debug)
-                    r = self._wait_unite_response(timeout, debug)
+            if not self.VPN_Mode:
+                self.is_my_turn_to_talk(address)
+            self._unite_query(query, text)
+            r = self._wait_unite_response(timeout)
+            if r is None:
+                log.warning("%s: resending", text)
         return r
 
-    def run_unite(self, address, query, timeout=TIMEOUT_SEC, text="", debug=0):
-        """High-level function to send UNI-TE request and get the response.
+    def run_unite(self, address, query, timeout=TIMEOUT_SEC, text=""):
+        """Send a UNI-TE request and return the UNI-TE answer bytes.
 
-        This function uses ``unite_query_until_response()`` and ``utils.unwrap_unite_response()``. So don't use them alone.
-        See ``utils.py`` for more details about ``unwrap_unite_response``.
-
-        .. NOTE::
-
-            All the UNI-TELWAY request and response are printed
-
-        :param address[int] : slave address
+        :param int address: Our link address
         :param list[int] query: UNI-TE request
-        :param float timeout: Timeout before sending again the request
-        :param str text: Text to print in debug mode
-        :param int debug: :doc:`Debug mode </debug_levels>`
-
-        :returns: UNI-TE response bytes
+        :param float timeout: Seconds to wait for the answer before resending
+        :param str text: Request name for the log
         :rtype: list[int]
-
-        :raises BadUnitelwayChecksum: Received bad UNI-TELWAY checksum
+        :raises NoPollingWindow: The master never polled ``address``
+        :raises BadUnitelwayChecksum: Bad BCC
+        :raises RefusedUnitelwayMessage: X-WAY service code ``0x22``
+        :raises UniteRequestFailed: UNI-TE answer ``0xFD``
         """
-        r = self._unite_query_until_response(address, query, timeout, text, debug)
-        if debug >= 1:
-            print(f"[{time.time()}] Received:", format_hex_list(r))
-
+        r = self._unite_query_until_response(address, query, timeout, text)
         if not self.VPN_Mode:
-            self._unitelway_query([ACK], debug=debug)
+            self._unitelway_query([ACK])  # 35000789 §3.6
+        unite = unwrap_unite_response(r)
+        log.info("%s -> %s", text, format_hex_list(unite))
+        return unite
 
-        # self.disconnect_socket(debug=debug)
-        return unwrap_unite_response(r)
+    def is_my_turn_to_talk(self, address, timeout=POLLING_TIMEOUT_SEC):
+        """Block until the master polls ``address`` with ``<DLE><ENQ><address>`` (35000789 §3.6).
 
-    def is_my_turn_to_talk(self, address, debug=0, timeout=POLLING_TIMEOUT_SEC):
-        """Block until the master polls our link address (``<DLE><ENQ><address>``, 35000789 §3.6).
-
-        :param int address: Slave link address
-        :param int debug: :doc:`Debug mode </debug_levels>`
-        :param float timeout: Seconds to wait for a polling window before giving up
-
-        :returns: ``True`` once the polling window has arrived
-        :rtype: bool
-
-        :raises NoPollingWindow: No poll for ``address`` within ``timeout`` seconds
+        :raises NoPollingWindow: No poll within ``timeout`` seconds
         :raises ConnectionError: The adapter closed the connection
         """
-        print("client.py - is_my_turn_to_talk func: " + "Waiting for sending window", flush=True)
         buf = []
-        is_in = False
         start = time.time()
-
         self.socket.settimeout(timeout)
         try:
             while True:
@@ -373,354 +202,179 @@ class UnitelwayClient:
                     raise NoPollingWindow(address, timeout)
                 if not r:
                     raise ConnectionError("Adapter closed the connection while waiting for a polling window")
-                if debug >= 1:
-                    print("recv =>", format_hex_list(r))
-
-                buf.extend(b for b in r)
-
-                res = sublist_in_list(buf, [DLE, ENQ, address])
-                is_in = res[0]
-
-                if is_in:
-                    break
+                log.debug("rx %s", format_hex_list(r))
+                buf.extend(r)
+                if sublist_in_list(buf, [DLE, ENQ, address])[0]:
+                    log.debug("polled at 0x%02X", address)
+                    return True
                 if time.time() - start >= timeout:
                     raise NoPollingWindow(address, timeout)
         finally:
             self.socket.settimeout(None)
-        if debug >= 2: print("client.py - is_my_turn_to_talk func: " + "Got sending window", flush=True)
-        return is_in
 
-    ####################################
-    # ACCESS TO DATA
-    ####################################
+    # ------- objects (938914 §4.1) -------
 
-    def _read_objects(self, segment, specific, start_address, number, debug=0):
-        """Send ``READ_OBJECTS`` request.
+    def _read_objects(self, segment, specific, start_address, number):
+        """Send Read-Object and return the raw answer ``code / specific / data`` (938914 §4.1.1).
 
-        This function is a low-level function: it returns directly the UNI-TE response.
-
-        :param int segment: Object segment value
-        :param int specific: Specific byte: object size for ladder segments (938914 §4.1.3.3), else 0
-        :param int start_address: First address to read
-        :param int number: Number of objects to read
-        :param int debug: :doc:`Debug mode </debug_levels>`
-
-        :returns: UNI-TE ``READ_OBJECTS`` response
+        :param int segment: Object family: an ``Object`` value or a ``LADDER_REQUEST`` code
+        :param int specific: Object size for ladder segments (938914 §4.1.3.3), else 0
+        :param int start_address: First object in the family
+        :param int number: Number of objects (not bytes)
+        :rtype: list[int]
+        :raises UnexpectedUniteResponse: Answer code is not ``0x66``
         """
-        print("client.py - _read_objects func: " + "Reading objects", flush=True)
-
-        address_bytes = start_address.to_bytes(2, byteorder="little", signed=False)
-        number_bytes = number.to_bytes(2, byteorder="little", signed=False)
-
-        unite_query = [READ_OBJECTS, self.category_code, segment, specific]
-        unite_query.extend(address_bytes)
-        unite_query.extend(number_bytes)
-
-        slave_address = self._unitelway_start[2]
-
-        resp = self.run_unite(slave_address, unite_query, text=f"READ_OBJECTS Seg={segment} Specific={specific} @{start_address} N={number}", debug=debug)
-
+        query = [READ_OBJECTS, self.category_code, segment, specific]
+        query += list(start_address.to_bytes(2, "little")) + list(number.to_bytes(2, "little"))
+        text = f"READ_OBJECTS seg=0x{segment:02X} spec={specific} @0x{start_address:04X} n={number}"
+        resp = self.run_unite(self.link_address, query, text=text)
         if not is_valid_response_code(READ_OBJECTS, resp[0]):
             raise UnexpectedUniteResponse(get_response_code(READ_OBJECTS), resp[0])
-
         return resp
 
-    def read_ladder(self, variable, debug=0):
+    def _write_objects(self, segment, specific, start_address, number, data):
+        """Send Write-Object (938914 §4.1.2). **Live on the machine.**
+
+        :param int segment: Object family
+        :param int specific: Object size for ladder segments, else 0
+        :param int start_address: First object to write
+        :param int number: Number of objects
+        :param list[int] data: Object bytes, little-endian
+        :returns: ``True`` on the ``0xFE`` answer
+        :raises UnexpectedUniteResponse: Answer code is not ``0xFE``
+        """
+        if isinstance(data, int):
+            data = [data]
+        query = [WRITE_OBJECTS, self.category_code, segment, specific]
+        query += list(start_address.to_bytes(2, "little")) + list(number.to_bytes(2, "little")) + list(data)
+        text = f"WRITE_OBJECTS seg=0x{segment:02X} spec={specific} @0x{start_address:04X} data={format_hex_list(data)}"
+        resp = self.run_unite(self.link_address, query, text=text)
+        if not is_valid_response_code(WRITE_OBJECTS, resp[0]):
+            raise UnexpectedUniteResponse(get_response_code(WRITE_OBJECTS), resp[0])
+        return parse_write_result(resp)
+
+    # ------- ladder variables (938914 §4.1.3.3, 938846 §15) -------
+
+    def read_ladder(self, variable):
         """Read one ladder variable.
 
         :param str variable: ``%SNNNN.S`` - symbol ``%M %V %I %Q %R %W %S``, hex logical number, size
             ``.0``-``.7`` (bit), ``.B``, ``.W``, ``.L`` or ``.&``. Index fields are not supported.
-        :param int debug: :doc:`Debug mode </debug_levels>`
         :returns: ``bool`` for a bit, signed ``int`` for ``.B``/``.W``/``.L``, address ``int`` for ``.&``
         :raises ValueError: Invalid variable
-        :raises UnexpectedUniteResponse: Answer code is not ``READ_OBJECTS``'s
+        :raises UnexpectedUniteResponse: Answer code is not ``0x66``
         :raises UnexpectedObjectTypeResponse: Echoed specific byte differs
         :raises UnexpectedDataLength: Data length does not match the size
         """
-        (_symbol, segment, address, size, _index) = parse_ladder_variable(variable, debug=debug)
-        resp = self._read_objects(segment, ladder_specific_byte(size), address, 1, debug)
+        (_symbol, segment, address, size, _index) = parse_ladder_variable(variable)
+        resp = self._read_objects(segment, ladder_specific_byte(size), address, 1)
         return parse_ladder_read_response(resp, size)
 
-    def _write_objects(self, segment, specific, start_address, number, data, debug=0):
-        """Send ``WRITE_OBJECTS`` request.
-
-        This function is a low-level function. It's used by ``write_xxx_bits``, ``write_xxx_words``, ``write_xxx_dwords``.
-
-        The ``data`` argument represents the last bytes of the request.
-
-        :param any segment: Object segment value
-        :param int specific: Specific byte: object size for ladder segments (938914 §4.1.3.3), else 0
-        :param int start_address: First address to write at
-        :param Union(list[int], int) data: Bytes to write
-        :param int debug: :doc:`Debug mode </debug_levels>`
-
-        :returns: ``True`` if the writing succeeded
-        :rtype: bool
-        """
-        print("client.py - _write_objects func: " + "Writing objects", flush=True)
-
-        if isinstance(data, int):
-            data = [data]
-
-        address_bytes = start_address.to_bytes(2, byteorder="little", signed=False)
-        number_bytes = number.to_bytes(2, byteorder="little", signed=False)
-
-        unite_query = [WRITE_OBJECTS, self.category_code, segment, specific]
-        unite_query.extend(address_bytes)
-        unite_query.extend(number_bytes)
-        unite_query.extend(data)
-
-        slave_address = self._unitelway_start[2]
-
-        resp = self.run_unite(slave_address, unite_query, text=f"WRITE_OBJECTS Seg={segment} Specific={specific} @{start_address} Values={format_hex_list(data)}", debug=debug)
-
-        if not is_valid_response_code(WRITE_OBJECTS, resp[0]):
-            raise UnexpectedUniteResponse(get_response_code(WRITE_OBJECTS), resp[0])
-
-        return parse_write_result(resp)
-
-    def write_ladder(self, variable, data, debug=0):
+    def write_ladder(self, variable, data):
         """Write a ladder variable - **not implemented**: validates ``variable`` and raises.
 
         .. WARNING::
             Writes are live on the machine. Trace the address with the bundle's ``trace_signal.py``
             before implementing this (see todo.md).
 
-        :param str variable: Ladder variable, same format as :meth:`read_ladder`
-        :param int data: Value to write
-        :param int debug: :doc:`Debug mode </debug_levels>`
         :raises NotImplementedError: Always, after validating ``variable``
         """
-        parse_ladder_variable(variable, debug=debug)
+        parse_ladder_variable(variable)
         raise NotImplementedError("write_ladder is not implemented yet (todo.md A2/A3)")
 
-    ####################################
-    # GENERAL PURPOSE REQUESTS
-    ####################################
+    # ------- general purpose requests (938914 §4.3 - §4.8) -------
 
-    def get_unit_identification(self, debug=0):
-        """Get the unit identification.
+    def get_unit_identification(self):
+        """Unit identification (§4.3).
 
-        This request sends a ``Unit Identification`` request and returns the response.
-        The response contains "product_type", "subtype", "product_version" and "text".
-
-        :param int debug: :doc:`Debug mode </debug_levels>`
-
-        :returns: Unit identification dict containing "product_type", "subtype", "product_version" and "text".
-        :rtype: dict[str: Any]
-
-        :raises UniteRequestFailed: Received ``0xFD``
+        :returns: ``product_type_code``, ``product_type``, ``subtype``, ``product_version``, ``text``
+        :rtype: dict
         """
-        print("client.py - get_unit_identification func: " + "Getting unit identification", flush=True)
-        unite_query = [IDENTIFICATION, self.category_code]
-        slave_address = self._unitelway_start[2]
-
-        resp = self.run_unite(slave_address, unite_query, text="GET_UNIT_IDENTIFICATION", debug=debug)
+        resp = self.run_unite(self.link_address, [IDENTIFICATION, self.category_code], text="IDENTIFICATION")
         if not is_valid_response_code(IDENTIFICATION, resp[0]):
             raise UnexpectedUniteResponse(get_response_code(IDENTIFICATION), resp[0])
-
         return parse_unit_identification(resp)
 
-    def get_unit_status(self, axis_group_index=0, debug=0):
-        """Get the unit status.
+    def get_unit_status(self, axis_group_index=0):
+        """Unit status: NC + PLC state, programme status of one axis group (§4.4).
 
-        This request sends a ``Unit Status Data`` request and returns the response.
-
-        :param int axis_group_index: Desired axis group index
-        :param int debug: :doc:`Debug mode </debug_levels>`
-        :returns: Unit status bytes
-        :rtype: dict[str: Any]
-
-        :raises UniteRequestFailed: Received ``0xFD``
+        :param int axis_group_index: Axis group
+        :rtype: dict
         """
-        print("client.py - get_unit_status func: " + "Getting unit status", flush=True)
-        unite_query = [STATUS, self.category_code, axis_group_index]
-        slave_address = self._unitelway_start[2]
-        r = self.run_unite(slave_address, unite_query, text="GET_UNIT_STATUS", debug=debug)
-        # # r = [97, 0, 48, 2, 9, 17, 17, 144, 95, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 1, 0, 0, 40, 35, 2, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255] # with auto? and tool 600
-        # # r = [97, 0, 48, 2, 9, 17, 17, 144, 95, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 1, 2, 0, 40, 35, 2, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255] # with mdi and tool 603
+        resp = self.run_unite(self.link_address, [STATUS, self.category_code, axis_group_index], text="STATUS")
+        if not is_valid_response_code(STATUS, resp[0]):
+            raise UnexpectedUniteResponse(get_response_code(STATUS), resp[0])
+        return parse_unit_status(resp)
 
-        if not is_valid_response_code(STATUS, r[0]):
-            raise UnexpectedUniteResponse(get_response_code(STATUS), r[0])
+    def mirror(self, data):
+        """Mirror request: the NC echoes ``data`` (§4.5).
 
-        return parse_unit_status(r)
-
-    ####################################
-    # COMMUNICATION INTERFACE REQUESTS
-    ####################################
-
-    def mirror(self, data, debug=0):
-        """Test connection with ``MIRROR`` request.
-
-        This request sends a bunch of data and checks if the received message contains the same data.
-        If data are the same: return ``True``, else ``False``.
-
-        :param list[int] data: Data to send in the request
-        :param int debug: :doc:`Debug mode </debug_levels>`
-
-        :returns: ``True`` if the received data is the same as the sent data
+        :param list[int] data: Up to 126 bytes
+        :returns: ``True`` if the echo matches
         :rtype: bool
-
-        :raises BadUnitelwayChecksum: Bad UNI-TELWAY checksum
-        :raises RefusedUnitelwayMessage: X-WAY type code == ``0x22``
-        :raises UniteRequestFailed: Received ``0xFD``
-        :raises UnexpectedUniteResponse: The response code is not ``MIRROR``'s response code
         """
-        print("client.py - mirror func: " + '[{}]'.format(','.join(f'{i:02X}' for i in data)), flush=True)
-        unite_query = [MIRROR, self.category_code, *data]
-        slave_address = self._unitelway_start[2]
-
-        resp = self.run_unite(slave_address, unite_query, text="MIRROR", debug=debug)
-
+        if len(data) > 126:
+            raise ValueError("mirror data is limited to 126 bytes (938914 §4.5)")
+        resp = self.run_unite(self.link_address, [MIRROR, self.category_code, *data], text="MIRROR")
         if not is_valid_response_code(MIRROR, resp[0]):
             raise UnexpectedUniteResponse(get_response_code(MIRROR), resp[0])
-
         return parse_mirror_result(resp[1:], data)
 
-    def get_unit_fault_history(self, debug=0):
-        """Get the link fault counters (character errors, frame errors, protocol errors)
+    def get_unit_fault_history(self):
+        """Link error counters (§4.6): sent/not acknowledged, sent/rejected, received/not acknowledged, received/rejected.
 
-        ..NOTE: Each error counter can count up to 0x7FFF and then freezes. There is no overflow. The counters can be reset manually.
-
-        :param int debug: :doc:`Debug mode </debug_levels>`
-
-        :returns: quadrouple of:
-            * number of messages sent and not acknowledged,
-            * number of messages sent and rejected,
-            * number of messages received and not acknowledged,
-            * number of messages received and rejected.
         :rtype: (int, int, int, int)
         """
-        print("client.py - get unit fault history", flush=True)
-        unite_query = [READ_CPT, self.category_code]
-        slave_address = self._unitelway_start[2]
-
-        resp = self.run_unite(slave_address, unite_query, text="Get Unit Fault History", debug=debug)
-
+        resp = self.run_unite(self.link_address, [READ_CPT, self.category_code], text="READ_CPT")
         if not is_valid_response_code(READ_CPT, resp[0]):
             raise UnexpectedUniteResponse(get_response_code(READ_CPT), resp[0])
-
         return parse_unit_fault_history(resp)
 
-    def get_stations_managed_by_master(self, debug=0):
-        """The Etat-Station request returns the number of stations connected to the master and their status.
+    def get_stations_managed_by_master(self):
+        """Stations managed by the master and their connected state (§4.7).
 
-        :param int debug: :doc:`Debug mode </debug_levels>`
-
-        :returns: number of stations managed and their status (connected/unconnected as list of bool)
         :rtype: (int, list[bool])
         """
-        print("client.py - get number of stations managed by master", flush=True)
-        unite_query = [ETAT_STATION, self.category_code]
-        slave_address = self._unitelway_start[2]
-
-        resp = self.run_unite(slave_address, unite_query, text="Get Number of Stations managed by Master", debug=debug)
-
+        resp = self.run_unite(self.link_address, [ETAT_STATION, self.category_code], text="ETAT_STATION")
         if not is_valid_response_code(ETAT_STATION, resp[0]):
             raise UnexpectedUniteResponse(get_response_code(ETAT_STATION), resp[0])
-
         return parse_stations_managed_by_master(resp)
 
-    # TODO CLEAR_CPT
+    # ------- NUM specific requests (938914 §3.6) -------
 
-    ####################################
-    # FILE TRANSFERS
-    ####################################
+    def get_available_bytes_in_ram(self):
+        """Free bytes in the NC RAM (§4.15).
 
-    # TODO OPEN DOWNLOAD
-
-    # TODO WRITE DOWNLOAD
-
-    # TODO CLOSE DOWNLOAD
-
-    # TODO OPEN UPLOAD
-
-    # TODO WRITE UPLOAD
-
-    # TODO CLOSE UPLOAD
-
-    ####################################
-    # SPECIFIC REQUESTS
-    ####################################
-
-    def get_available_bytes_in_ram(self, debug=0):
-        """Get the available bytes in RAM.
-
-        This request sends a ``Reading the Number of Bytes Available in the RAM`` request and returns the response.
-
-        :param int debug: :doc:`Debug mode </debug_levels>`
-        :returns: Available bytes in RAM
         :rtype: int
-
-        :raises OperationInProgrammeArea: Operation in the programme area
-        :raises UniteRequestFailed: Received ``0xFD``
-        :raises UnexpectedAdditionalAwnserCode: Unexpected additional answer code
+        :raises OperationInProgrammeArea: Status ``0x02``
         """
-        print("client.py - get_available_bytes_in_ram func: " + "Getting available bytes in RAM", flush=True)
-        unite_query = [SPECIFIC_REQUEST, self.category_code, READ_MEMORY_FREE]
-        slave_address = self._unitelway_start[2]
-        r = self.run_unite(slave_address, unite_query, text="GET_AVAILABLE_BYTES_IN_RAM", debug=debug)
+        query = [SPECIFIC_REQUEST, self.category_code, READ_MEMORY_FREE]
+        resp = self.run_unite(self.link_address, query, text="READ_MEMORY_FREE")
+        check_specific_answer(resp, READ_MEMORY_FREE)
+        return parse_available_bytes_in_ram(resp)
 
-        # 938914 §4.15: answer H'F5' / H'77' / status / long word
-        check_specific_answer(r, READ_MEMORY_FREE)
+    def write_message(self, message):
+        # TODO A8: num_lines is a float and the data is not padded to 32 bytes per line (§4.17)
+        """Display a supervisor message on the NC (§4.17). **Untested, cannot send yet.**
 
-        return parse_available_bytes_in_ram(r)
-
-    # TODO OPEN DIRECTORY
-
-    # TODO DIRECTORY
-
-    # TODO CLOSE DIRECTORY
-
-    def write_message(self, message, debug=0):
-        # TODO untested
-        """Send a message by supervisor.
-
-        This request sends a ``Send Message by Supervisor`` request and returns the response.
-
-        :param str message: Message to send, 96 characters maximum
-        :param int debug: :doc:`Debug mode </debug_levels>`
-        :returns: Sending success
-        :rtype: bool
-
-        :raises UniteRequestFailed: Received ``0xFD``
+        :param str message: Up to 96 printable ASCII characters
+        :returns: ``True`` on the positive answer
         """
-        print("client.py - send_message_by_supervisor func: " + "Sending message by supervisor", flush=True)
-
         if len(message) > 96:
             raise ValueError("The message is too long. It must be 96 characters maximum.")
         num_lines = len(message) / 32
-
-        # TODO A8: num_lines is a float and the data is not padded to 32 bytes per line (938914 §4.17)
-        unite_query = [SPECIFIC_REQUEST, self.category_code, WRITE_MESSAGE, 0x00, num_lines]
-        unite_query.extend([ord(c) for c in message])
-        slave_address = self._unitelway_start[2]
-        r = self.run_unite(slave_address, unite_query, text="SEND_MESSAGE_BY_SUPERVISOR", debug=debug)
-
-        # 938914 §4.17 body says the positive additional answer code is H'FE', the §3.6 table H'7B'
-        check_specific_answer(r, WRITE_MESSAGE, also_accept=(0xFE,))
-
+        query = [SPECIFIC_REQUEST, self.category_code, WRITE_MESSAGE, 0x00, num_lines]
+        query += [ord(c) for c in message]
+        resp = self.run_unite(self.link_address, query, text="WRITE_MESSAGE")
+        check_specific_answer(resp, WRITE_MESSAGE, also_accept=(0xFE,))  # §4.17 says FE, the §3.6 table 7B
         return True
 
-    def shutdown(self, debug=0):
-        # TODO untested
-        """Shut down the PCNC PC module (938928 §10.4.10).
+    def shutdown(self):
+        """Shut down the PCNC PC module (938928 §10.4.10). **Untested; unknown whether a UC SII answers.**
 
-        This is a PCNC-server request: it runs an executable that shuts down the PC module.
-        Whether the NUM 1060 UC SII answers it at all is unverified.
-
-        :param int debug: :doc:`Debug mode </debug_levels>`
-        :returns: Shutdown success
-        :rtype: bool
-
-        :raises UniteRequestFailed: Received ``0xFD``
+        :returns: ``True`` if the status byte is ``0x00``
         """
-        print("client.py - shutdown func: " + "Shutting down the PLC", flush=True)
-        unite_query = [SPECIFIC_REQUEST, self.category_code, SHUTDOWN, 0x00]
-        slave_address = self._unitelway_start[2]
-        r = self.run_unite(slave_address, unite_query, text="SHUTDOWN", debug=debug)
-
-        # 938928 §10.4.10: answer H'F5' / H'96' / status (H'00' done, H'1C' refused)
-        check_specific_answer(r, SHUTDOWN)
-
-        return parse_shutdown_result(r)
+        query = [SPECIFIC_REQUEST, self.category_code, SHUTDOWN, 0x00]
+        resp = self.run_unite(self.link_address, query, text="SHUTDOWN")
+        check_specific_answer(resp, SHUTDOWN)
+        return parse_shutdown_result(resp)

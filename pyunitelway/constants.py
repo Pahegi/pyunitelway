@@ -16,6 +16,7 @@ DLE = 0x10
 STX = 0x02
 ENQ = 0x05
 ACK = 0x06
+NAK = 0x15
 
 # Category types
 TYPE_TSX = 7
@@ -37,10 +38,8 @@ OPEN_UPLOAD = 0x3D
 WRITE_UPLOAD = 0x3E
 CLOSE_UPLOAD = 0x3F
 
-# NUM specific requests (938914 §3.6; 938928 §10.4 for the two PCNC ones).
-# They all share request code H'F5' and are told apart by an *additional request code*
-# that follows the category code. The answer is H'F5' followed by the matching
-# *additional answer code* (= additional request code + 0x30), then status/data.
+# NUM specific requests (938914 §3.6; 938928 §10.4): request H'F5' + additional request code,
+# answer H'F5' + additional answer code (= request code + 0x30), then status/data
 SPECIFIC_REQUEST = 0xF5
 
 DELETE_FILE = 0x46

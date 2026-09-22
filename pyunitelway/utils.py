@@ -52,16 +52,6 @@ def format_hex_list(list):
     return format_bytearray(bytearray(list))
 
 
-def print_hex_list(list):
-    """Print a list of bytes in hexadecimal.
-
-    Bytes are space-separated.
-
-    :param list[int] list: List of bytes
-    """
-    print(format_hex_list(list))
-
-
 def get_response_code(query_code):
     """Return the UNI-TE response code that corresponds to a request code.
     

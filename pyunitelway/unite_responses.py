@@ -33,8 +33,7 @@ def parse_unit_identification(received_data):
 
     data = {}
 
-    # 938914 §4.3 table. The NUM 1060 Series II UC SII in Darmstadt answers 102 with the text
-    # "NUM1060S2UCS2" (captured 2026-09-22), so trust ``text`` over this mapping.
+    # 938914 §4.3; this UC SII answers 102 ("NUM 1040") with text NUM1060S2UCS2 - trust ``text``
     product_type = resp[1]
     data["product_type_code"] = product_type
     match product_type:
@@ -105,9 +104,7 @@ def parse_unit_status(received_data):
     status_mask["local_mode"] = (status_mask_bits & 0x80) != 0
     result["status_mask"] = status_mask
 
-    # 22 bytes of segment 153. Field ORDER per 938846 §15.2 (G functions first), field SIZES per
-    # 938914 §4.1.3: the two manuals disagree on the order and the machine follows 938846 - read
-    # that way the idle NC reports G01 G17 G90 G40 G54 G94 G97, %9001 and tool axis Z- (2026-09-22).
+    # segment 153: field order per 938846 §15.2 (G list first), sizes per 938914 §4.1.3 (todo.md A12)
     list_of_g_functions = dict()
     list_of_g_functions_bits = read_dword(r)
     # bit numbers per 938914 segment 153; bits 5, 22, 26 and 29 are not assigned
@@ -147,7 +144,7 @@ def parse_unit_status(received_data):
         list_of_g_functions[key] = (list_of_g_functions_bits & (1 << value)) >> value
     result["list_of_g_functions"] = list_of_g_functions
 
-    # sent as programme number x 10 + index: 90010 for %9001 (inferred from two captures)
+    # programme number x 10 + index (90010 = %9001; inferred from two captures)
     active_program = read_dword(r)
     result["active_program_number"] = active_program // 10
     result["active_program_index"] = active_program % 10
@@ -156,8 +153,7 @@ def parse_unit_status(received_data):
     result["errored_block_number"] = read_word(r)
     result["tool_number"] = read_word(r)
 
-    # 938914 segment 153: the axis bit (0 = X, 1 = Y, 2 = Z) is set in the high byte for a
-    # positive direction and in the low byte for a negative one -> +1 / -1 / 0 per axis
+    # 938914 seg 153: high byte = positive, low byte = negative; bit 0 X, 1 Y, 2 Z
     tool_direction = dict()
     tool_direction_bits = read_word(r)
     for axis, bit in (("x", 0), ("y", 1), ("z", 2)):
@@ -210,7 +206,7 @@ def parse_unit_status(received_data):
         "byte": nc_status_bits,
     }
     result["nc_mode"] = Mode(read_byte(r))  # %R16.B
-    # 938914 calls this byte "machine mode"; its ladder image %R18.B is ERRMACH, the machine error number
+    # %R18.B ERRMACH (938846 §3.8.1.10); 938914 §4.4 calls it "machine mode"
     result["machine_error_number"] = read_byte(r)
     result["current_program_number"] = read_word(r)  # %R1A.W PROGCOUR
     plc_status = read_byte(r)
@@ -254,12 +250,11 @@ def parse_available_bytes_in_ram(received_data):
     return read_dword(r[3:7])
 
 
-def parse_ladder_variable(variable, debug=0):
+def parse_ladder_variable(variable):
     """Split a ladder variable name into its request fields.
 
     :param str variable: ``%SNNNN.S`` - symbol ``%M %V %I %Q %R %W %S``, hex logical number, size
         ``.0``-``.7`` (bit), ``.B``, ``.W``, ``.L`` or ``.&``. Index fields (``[i]``) are not supported.
-    :param int debug: :doc:`Debug mode </debug_levels>`
     :returns: (symbol, segment code, logical number, size, index) - index is always ``None``
     :rtype: (str, int, int, str, None)
     :raises ValueError: Invalid symbol, size or logical number (938914 §4.1.3.3 bounds)
@@ -287,8 +282,6 @@ def parse_ladder_variable(variable, debug=0):
     size = parts[1]
     if size not in [str(i) for i in range(8)] + list(ladder_size):
         raise ValueError(f"Invalid size {size!r} in {variable!r}")
-
-    if debug > 2: print(f"{variable}: segment {symbol_request:#x}, address {logical_number:#x}, size {size}", flush=True)
 
     return symbol, symbol_request, logical_number, size, None
 
@@ -369,9 +362,7 @@ def parse_stations_managed_by_master(response):
     resp = list(response)
     r = resp[1:]
     num_stations = read_byte(r)
-    # 938914 §4.7: 1 bit per station, rank = station address. The manual does not give the bit
-    # order; the NUM 1060 answered D3 01 80 while this client was connected as link address 1
-    # (2026-09-22), so the bits run from the MSB: station i is bit 7 - i % 8 of byte i // 8.
+    # 938914 §4.7: 1 bit per station, rank = address; MSB-first (machine answered D3 01 80 as sole slave)
     status = [(r[i // 8] >> (7 - i % 8)) & 1 == 1 for i in range(num_stations)]
     return num_stations, status
 
