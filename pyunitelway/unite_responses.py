@@ -1,7 +1,7 @@
 from pyunitelway.constants import LADDER_REQUEST
-from pyunitelway.errors import UnexpectedAdditionalAwnserCode, OperationInProgrammeArea
-from pyunitelway.num_constants import Mode, symbol_bounds
-from pyunitelway.utils import read_byte, read_dword, read_word, read_bytes, read_int
+from pyunitelway.errors import UnexpectedAdditionalAwnserCode, OperationInProgrammeArea, UnexpectedObjectTypeResponse, UnexpectedDataLength
+from pyunitelway.num_constants import Mode, symbol_bounds, symbol_low_byte_max, ladder_size
+from pyunitelway.utils import read_byte, read_dword, read_word, read_bytes, read_int, ladder_specific_byte
 
 
 def parse_mirror_result(received_data, sent_data):
@@ -255,80 +255,64 @@ def parse_available_bytes_in_ram(received_data):
 
 
 def parse_ladder_variable(variable, debug=0):
-    """Parses a ladder variable into symbol, symbol request code, logical number, size and index.
-    Index fields are not supported yet.
+    """Split a ladder variable name into its request fields.
 
-    :param str variable: Ladder variable name in the format ``%SNNNN.S[I]`` with symbol S, logical number NNNN, size S and optional index I in square brackets.
-
-        Possible values for symbol:
-
-        * %M - saved common internal variables
-        * %V - saved common variables
-        * %I - I/O interface read variables
-        * %Q - I/O interface write variables
-        * %R - CNC I/O interface read variables
-        * %W - CNC I/O interface write variables
-        * %S - common word variables
-        * %Y - local variables (not supported over UNITE)
-
-        Possible values for size:
-
-        * .n - bit (n = 0 to 7)
-        * .B - signed integer (1 byte)
-        * .W - signed integer (2 bytes, MSB at n, LSB at n+1)
-        * .L - signed integer (4 bytes, MSB at n, LSB at n+3)
-        * .& - address (4 bytes)
-
+    :param str variable: ``%SNNNN.S`` - symbol ``%M %V %I %Q %R %W %S``, hex logical number, size
+        ``.0``-``.7`` (bit), ``.B``, ``.W``, ``.L`` or ``.&``. Index fields (``[i]``) are not supported.
     :param int debug: :doc:`Debug mode </debug_levels>`
-    :returns: (symbol, symbol request code, logical number, size, index)
-    :rtype: Any
-
-    :raises ValueError: Invalid symbol
-    :raises ValueError: Invalid logical number
-    :raises ValueError: Invalid size
+    :returns: (symbol, segment code, logical number, size, index) - index is always ``None``
+    :rtype: (str, int, int, str, None)
+    :raises ValueError: Invalid symbol, size or logical number (938914 §4.1.3.3 bounds)
+    :raises NotImplementedError: Index field present
     """
-    print("client.py - parse_ladder_variable func: " + "Parsing ladder variable", flush=True)
-
     symbol = variable[:2]
+    if symbol not in LADDER_REQUEST:
+        raise ValueError(f"Invalid symbol {symbol!r} in {variable!r}")
     symbol_request = LADDER_REQUEST[symbol]
-    if symbol not in ["%M", "%V", "%I", "%Q", "%R", "%W", "%S"]:
-        raise ValueError("Invalid symbol")
 
-    logical_number = int(variable[2:].split(".")[0], 16)
-    bounds = symbol_bounds[symbol]
-    if logical_number > bounds or logical_number < 0:
-        raise ValueError(f"Invalid logical number {logical_number} for symbol {symbol}: must be between 0 and {bounds}")
-
-    size = variable.split(".")[1][0]
-    if size not in ["0", "1", "2", "4", "5", "6", "7", "B", "W", "L", "&"]:
-        raise ValueError("Invalid size")
-
-    # TODO handle index field
     if "[" in variable:
         raise NotImplementedError("Index fields are not supported yet")
 
-    if debug > 2: print("symbol: " + symbol + ", logical_number: " + str(logical_number) + ", size: " + size + ", symbol request code: " + hex(symbol_request), flush=True)
+    parts = variable[2:].split(".")
+    if len(parts) != 2 or not parts[0]:
+        raise ValueError(f"Invalid ladder variable {variable!r}: expected %SNNNN.S")
+    logical_number = int(parts[0], 16)
+    bounds = symbol_bounds[symbol]
+    if not 0 <= logical_number <= bounds:
+        raise ValueError(f"Invalid logical number {logical_number:#x} for {symbol}: must be between 0 and {bounds:#x}")
+    low_max = symbol_low_byte_max.get(symbol, 0xFF)
+    if logical_number & 0xFF > low_max:
+        raise ValueError(f"Invalid logical number {logical_number:#x} for {symbol}: low byte must be <= {low_max:#x}")
+
+    size = parts[1]
+    if size not in [str(i) for i in range(8)] + list(ladder_size):
+        raise ValueError(f"Invalid size {size!r} in {variable!r}")
+
+    if debug > 2: print(f"{variable}: segment {symbol_request:#x}, address {logical_number:#x}, size {size}", flush=True)
 
     return symbol, symbol_request, logical_number, size, None
 
 
 def parse_ladder_read_response(response, size):
-    """Parse ladder read response
-    Returns the value of the ladder variable as an integer or a boolean if the size is a bit.
+    """Decode a ladder Read-Object answer: code / echoed specific byte / data (938914 §4.1.1).
 
-    :param list[int] response: Response **with** UNI-TE response code
-    :param str size: Size value of the ladder variable (``n`` in range [0,7], ``B``, ``W``, ``L``, ``&``)
-
-    :returns: Value of the ladder variable
-    :rtype: Union[int, bool]
+    :param list[int] response: Answer bytes, starting at the answer code
+    :param str size: Size suffix of the variable (``0``-``7``, ``B``, ``W``, ``L``, ``&``)
+    :returns: ``bool`` for a bit, signed ``int`` for ``.B``/``.W``/``.L``, unsigned for ``.&``
+    :raises UnexpectedObjectTypeResponse: Echoed specific byte differs from the one sent
+    :raises UnexpectedDataLength: Data length does not match the size
     """
-    resp = list(response)
-    resp = resp[2:]  # first two characters are response code and object address
-    if "0" <= size <= "7":
-        read_byte(resp)
-        return (resp[0] >> int(size)) & 1
-    else:
-        return read_int(resp[1:])
+    specific = ladder_specific_byte(size)
+    if response[1] != specific:
+        raise UnexpectedObjectTypeResponse(specific, response[1])
+    data = list(response[2:])
+    expected = ladder_size.get(size, 1)
+    if len(data) != expected:
+        raise UnexpectedDataLength(expected, data)
+    if size.isdigit():
+        return bool(data[0])  # NC answers 0x80 for a set bit (2026-09-22), not 0x01
+    # 938914 §2: little-endian; 938846 §4: .B/.W/.L signed, .& an address
+    return int.from_bytes(bytes(data), "little", signed=(size != "&"))
 
 
 def parse_write_result(response):

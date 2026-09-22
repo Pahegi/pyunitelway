@@ -4,6 +4,7 @@
 import time
 
 from .constants import *
+from .num_constants import ladder_specific
 from .errors import MalformedUnitelwayResponse, UnexpectedAdditionalAwnserCode, UnexpectedUniteResponse, UniteRequestFailed
 
 
@@ -91,6 +92,15 @@ def is_valid_response_code(query_code, resp_code):
     :rtype: bool
     """
     return resp_code == 0xFD or resp_code == get_response_code(query_code)
+
+
+def ladder_specific_byte(size):
+    """Specific byte for a ladder object size: bit ``n`` -> ``n``, ``B`` 64, ``W`` 65, ``L``/``&`` 66 (938914 §4.1.3.3).
+
+    :param str size: Size suffix of the variable
+    :rtype: int
+    """
+    return int(size) if size.isdigit() else ladder_specific[size]
 
 
 def check_specific_answer(response, additional_request, also_accept=()):

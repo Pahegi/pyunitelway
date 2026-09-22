@@ -75,13 +75,22 @@ def main():
     # print(client.write_message("Hello World!", debug))  # displays text on the NC (A8: cannot send yet)
     # print(client._write_objects(Object.MODE_SELECTION, 0x00, 0x00, 0x01, [Mode.MDI, 0x00], debug))  # sets the mode (Mode.AUTO = 0, Mode.MDI = 2)
 
-    # read ladder
-    # print(client.read_ladder("%R5.1"))  # program active
-    # print(client.read_ladder("%R16.B"))  # current mode
-    # print(client.read_ladder("%R1A.W"))  # active program number
-    # print(client.read_ladder("%R14.1"))  # battery status
-    # print(client.read_ladder("%R17.B"))  # displayed page number
-    # print(client.read_ladder("%R18.B"))  # machine error number
+    # ---- ladder reads (all %R = NC -> PLC, read-only) ----
+    for var, what in [
+        ("%R5.1", "E_PROG programme active"),
+        ("%R16.B", "MODCOUR current mode"),
+        ("%R1A.W", "PROGCOUR active programme (9001: bytes 29 23 = little-endian)"),
+        ("%R14.1", "E_BAT battery"),
+        ("%R17.B", "PGVISU displayed page"),
+        ("%R18.B", "ERRMACH machine error number"),
+        ("%R5.0", "E_CNPRET CNC ready, known 1 (bit-read format)"),
+        ("%R17.1", "bit 1 of PGVISU, compare with %R17.B"),
+        ("%R17.2", "bit 2 of PGVISU"),
+        ("%R6.L", "AXMVT axes in motion (long)"),
+    ]:
+        attempt(f"read_ladder {var} - {what}", lambda v=var: client.read_ladder(v, debug))
+    # QUANTITY on a ladder segment: 2 x %R1A.W -> 4 data bytes if objects, 2 if bytes (todo.md B1)
+    attempt("_read_objects %R1A.W x2", lambda: client._read_objects(0xA4, 65, 0x1A, 2, debug))
 
     # write ladder
     # print(client.write_ladder("%W3.2", 0x01))  # cycle start set (needs reset)

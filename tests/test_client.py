@@ -144,3 +144,25 @@ class TestIsMyTurnToTalk:
         c.socket = FakeSocket([b""])
         with pytest.raises(ConnectionError):
             c.is_my_turn_to_talk(0x01, timeout=1)
+
+
+class TestReadLadder:
+    def test_sends_specific_byte_for_the_size_and_decodes(self):
+        sent = []
+        c = client_answering([0x66, 65, 0x29, 0x23], sent)
+        assert c.read_ladder("%R1A.W") == 9001
+        # 36 / cat / segment %R / specific 65 = word / address 0x001A / quantity 1
+        assert sent == [[0x36, 0x00, 0xA4, 65, 0x1A, 0x00, 0x01, 0x00]]
+
+    def test_bit_read_sends_the_bit_number(self):
+        sent = []
+        c = client_answering([0x66, 0x01, 0x01], sent)
+        assert c.read_ladder("%R5.1") is True
+        assert sent[0][3] == 1
+
+    def test_write_ladder_raises_before_sending(self):
+        sent = []
+        c = client_answering([0xFE], sent)
+        with pytest.raises(NotImplementedError):
+            c.write_ladder("%W3.2", 1)
+        assert sent == []

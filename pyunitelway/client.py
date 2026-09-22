@@ -11,8 +11,7 @@ from pyunitelway.conversion import unwrap_unite_response
 from pyunitelway.unite_responses import parse_mirror_result, parse_write_result, parse_unit_identification, parse_unit_status, parse_available_bytes_in_ram, parse_unit_fault_history, parse_stations_managed_by_master, parse_ladder_variable, \
     parse_ladder_read_response, parse_shutdown_result
 from pyunitelway.errors import UnexpectedUniteResponse, NoPollingWindow
-from pyunitelway.num_constants import ladder_size
-from pyunitelway.utils import compute_bcc, duplicate_dle, format_bytearray, format_hex_list, get_response_code, is_valid_response_code, sublist_in_list, delete_dle, read_byte, read_int, check_specific_answer
+from pyunitelway.utils import compute_bcc, duplicate_dle, format_bytearray, format_hex_list, get_response_code, is_valid_response_code, sublist_in_list, delete_dle, read_byte, read_int, check_specific_answer, ladder_specific_byte
 
 
 class UnitelwayClient:
@@ -395,13 +394,13 @@ class UnitelwayClient:
     # ACCESS TO DATA
     ####################################
 
-    def _read_objects(self, segment, obj_type, start_address, number, debug=0):
+    def _read_objects(self, segment, specific, start_address, number, debug=0):
         """Send ``READ_OBJECTS`` request.
 
         This function is a low-level function: it returns directly the UNI-TE response.
 
         :param int segment: Object segment value
-        :param int obj_type: Object type value
+        :param int specific: Specific byte: object size for ladder segments (938914 §4.1.3.3), else 0
         :param int start_address: First address to read
         :param int number: Number of objects to read
         :param int debug: :doc:`Debug mode </debug_levels>`
@@ -413,82 +412,36 @@ class UnitelwayClient:
         address_bytes = start_address.to_bytes(2, byteorder="little", signed=False)
         number_bytes = number.to_bytes(2, byteorder="little", signed=False)
 
-        unite_query = [READ_OBJECTS, self.category_code, segment, obj_type]
+        unite_query = [READ_OBJECTS, self.category_code, segment, specific]
         unite_query.extend(address_bytes)
         unite_query.extend(number_bytes)
 
         slave_address = self._unitelway_start[2]
 
-        resp = self.run_unite(slave_address, unite_query, text=f"READ_OBJECTS Seg={segment} Type={obj_type} @{start_address} N={number}", debug=debug)
+        resp = self.run_unite(slave_address, unite_query, text=f"READ_OBJECTS Seg={segment} Specific={specific} @{start_address} N={number}", debug=debug)
 
         if not is_valid_response_code(READ_OBJECTS, resp[0]):
             raise UnexpectedUniteResponse(get_response_code(READ_OBJECTS), resp[0])
 
         return resp
 
-    def read_objects(self, object, number, offset=0, debug=0):
-        """High level abstraction function to read objects
-        TODO pass object from Object Enum and automatically figure out address and return type/size
+    def read_ladder(self, variable, debug=0):
+        """Read one ladder variable.
 
-        :param Object object: Object to read
-        :param Int number: Number of objects to read
-        :param Int offset: TODO offset in bytes or words?
+        :param str variable: ``%SNNNN.S`` - symbol ``%M %V %I %Q %R %W %S``, hex logical number, size
+            ``.0``-``.7`` (bit), ``.B``, ``.W``, ``.L`` or ``.&``. Index fields are not supported.
         :param int debug: :doc:`Debug mode </debug_levels>`
-
-        :returns: Requested Object in corresponding type (depending on object)
-        :rtype: Any
+        :returns: ``bool`` for a bit, signed ``int`` for ``.B``/``.W``/``.L``, address ``int`` for ``.&``
+        :raises ValueError: Invalid variable
+        :raises UnexpectedUniteResponse: Answer code is not ``READ_OBJECTS``'s
+        :raises UnexpectedObjectTypeResponse: Echoed specific byte differs
+        :raises UnexpectedDataLength: Data length does not match the size
         """
-        return NotImplementedError()
-
-    def read_ladder(self, variable, number=1, debug=0):
-        # TODO untested
-        """Read a ladder variable.
-        Index fields are not supported yet.
-
-        :param str variable: Ladder variable name in the format ``%SNNNN.S[I]`` with symbol S, logical number NNNN, size S and optional index I in square brackets
-
-            Possible values for symbol:
-
-            * %M - saved common internal variables
-            * %V - saved common variables
-            * %I - I/O interface read variables
-            * %Q - I/O interface write variables
-            * %R - CNC I/O interface read variables
-            * %W - CNC I/O interface write variables
-            * %S - common word variables
-            * %Y - local variables (not supported over UNITE)
-
-            Possible values for size:
-
-            * .n - bit (n = 0 to 7)
-            * .B - signed integer (1 byte)
-            * .W - signed integer (2 bytes, MSB at n, LSB at n+1)
-            * .L - signed integer (4 bytes, MSB at n, LSB at n+3)
-            * .& - address (4 bytes)
-
-        :param int number: Number of objects to read
-        :param int debug: :doc:`Debug mode </debug_levels>`
-        :returns: Ladder variable value
-        :rtype: Any
-
-        :raises ValueError: Invalid symbol
-        :raises ValueError: Invalid logical number
-        :raises ValueError: Invalid size
-        """
-        print("client.py - read_ladder func: " + "Reading ladder", flush=True)
-
-        (symbol, symbol_request, logical_number, size, index) = parse_ladder_variable(variable, debug=debug)
-        num_bytes = 1 if chr(0) <= size <= chr(7) else ladder_size(size)
-        resp = self.read_objects(symbol_request, num_bytes, logical_number, number, debug)
-
-        if not is_valid_response_code(READ_OBJECTS, resp[0]):
-            raise UnexpectedUniteResponse(get_response_code(READ_OBJECTS), resp[0])
-        if not resp[1] == symbol_request:
-            raise UnexpectedUniteResponse(symbol_request, resp[1])
-
+        (_symbol, segment, address, size, _index) = parse_ladder_variable(variable, debug=debug)
+        resp = self._read_objects(segment, ladder_specific_byte(size), address, 1, debug)
         return parse_ladder_read_response(resp, size)
 
-    def _write_objects(self, segment, obj_type, start_address, number, data, debug=0):
+    def _write_objects(self, segment, specific, start_address, number, data, debug=0):
         """Send ``WRITE_OBJECTS`` request.
 
         This function is a low-level function. It's used by ``write_xxx_bits``, ``write_xxx_words``, ``write_xxx_dwords``.
@@ -496,7 +449,7 @@ class UnitelwayClient:
         The ``data`` argument represents the last bytes of the request.
 
         :param any segment: Object segment value
-        :param int obj_type: Object type value
+        :param int specific: Specific byte: object size for ladder segments (938914 §4.1.3.3), else 0
         :param int start_address: First address to write at
         :param Union(list[int], int) data: Bytes to write
         :param int debug: :doc:`Debug mode </debug_levels>`
@@ -512,91 +465,34 @@ class UnitelwayClient:
         address_bytes = start_address.to_bytes(2, byteorder="little", signed=False)
         number_bytes = number.to_bytes(2, byteorder="little", signed=False)
 
-        unite_query = [WRITE_OBJECTS, self.category_code, segment, obj_type]
+        unite_query = [WRITE_OBJECTS, self.category_code, segment, specific]
         unite_query.extend(address_bytes)
         unite_query.extend(number_bytes)
         unite_query.extend(data)
 
         slave_address = self._unitelway_start[2]
 
-        resp = self.run_unite(slave_address, unite_query, text=f"WRITE_OBJECTS Seg={segment} Type={obj_type} @{start_address} Values={format_hex_list(data)}", debug=debug)
+        resp = self.run_unite(slave_address, unite_query, text=f"WRITE_OBJECTS Seg={segment} Specific={specific} @{start_address} Values={format_hex_list(data)}", debug=debug)
 
         if not is_valid_response_code(WRITE_OBJECTS, resp[0]):
             raise UnexpectedUniteResponse(get_response_code(WRITE_OBJECTS), resp[0])
 
         return parse_write_result(resp)
 
-    def write_objects(self, object, number, data, offset=0, debug=0):
-        """High level abstraction function to write objects
-        TODO pass object from Object Enum. Automatically figure out the address and if object is allowed to be written
-
-        :param Object object: Object to read
-        :param Int number: Number of objects to read
-        :param Int offset: TODO offset in bytes or words?
-        :param int debug: :doc:`Debug mode </debug_levels>`
-
-        :returns: Requested Object in corresponding type (depending on object)
-        :rtype: Any
-        """
-        return NotImplementedError()
-
-    def write_ladder(self, variable, data, number=1, debug=0):
-        # TODO untested
-        """Write a ladder variable.
-        Index fields are not supported yet.
+    def write_ladder(self, variable, data, debug=0):
+        """Write a ladder variable - **not implemented**: validates ``variable`` and raises.
 
         .. WARNING::
-            This operation is irreversible.
-            It can overwrite data and it can brick the PLC.
-            Be **very** careful when using this function.
+            Writes are live on the machine. Trace the address with the bundle's ``trace_signal.py``
+            before implementing this (see todo.md).
 
-        .. WARNING::
-            Writing of single bits is not supported yet.
-
-        :param str variable: Ladder variable name in the format ``%SNNNN.S[I]`` with symbol S, logical number NNNN, size S and optional index I in square brackets
-
-            Possible values for symbol:
-
-            * %M - saved common internal variables
-            * %V - saved common variables
-            * %I - I/O interface read variables
-            * %Q - I/O interface write variables
-            * %R - CNC I/O interface read variables
-            * %W - CNC I/O interface write variables
-            * %S - common word variables
-            * %Y - local variables (not supported over UNITE)
-
-            Possible values for size:
-
-            * .n - bit (n = 0 to 7)
-            * .B - signed integer (1 byte)
-            * .W - signed integer (2 bytes, MSB at n, LSB at n+1)
-            * .L - signed integer (4 bytes, MSB at n, LSB at n+3)
-            * .& - address (4 bytes)
-
-        :param Union(int, list[int]) data: Data to write
-        :param int number: Number of bytes to be written starting with the first
+        :param str variable: Ladder variable, same format as :meth:`read_ladder`
+        :param int data: Value to write
         :param int debug: :doc:`Debug mode </debug_levels>`
-        :returns: Success of the writing
-        :rtype: bool
-
-        :raises ValueError: Invalid symbol
-        :raises ValueError: Invalid logical number
-        :raises ValueError: Invalid size
-        :raises NotImplementedError: Writing of single bits is not supported yet
+        :raises NotImplementedError: Always, after validating ``variable``
         """
-        print("client.py - read_ladder func: " + "Writing ladder", flush=True)
-
-        (symbol, symbol_request, logical_number, size, index) = parse_ladder_variable(variable, debug=debug)
-        if chr(0) <= size <= chr(7):
-            raise NotImplementedError("Writing of single bits is not supported yet.")
-        num_bytes = 1 if chr(0) <= size <= chr(7) else ladder_size(size)
-        resp = self.write_objects(symbol_request, num_bytes, logical_number, number, data, debug)
-
-        if not is_valid_response_code(WRITE_OBJECTS, resp[0]):
-            raise UnexpectedUniteResponse(get_response_code(READ_OBJECTS), resp[0])
-
-        return True
+        parse_ladder_variable(variable, debug=debug)
+        raise NotImplementedError("write_ladder is not implemented yet (todo.md A2/A3)")
 
     ####################################
     # GENERAL PURPOSE REQUESTS

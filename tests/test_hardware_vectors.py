@@ -11,6 +11,7 @@ from pyunitelway.conversion import unwrap_unite_response
 from pyunitelway.num_constants import Mode
 from pyunitelway.unite_responses import (
     parse_available_bytes_in_ram,
+    parse_ladder_read_response,
     parse_mirror_result,
     parse_stations_managed_by_master,
     parse_unit_fault_history,
@@ -33,6 +34,13 @@ MEMORY_FREE = frame("10 02 01 0d 20 00 fe 00 00 00 f5 77 00 02 3d 04 00 ed")
 READ_MODE = frame("10 02 01 0a 20 00 fe 00 00 00 66 00 00 00 a1")
 STATIONS = frame("10 02 01 09 20 00 fe 00 00 00 d3 01 80 8e")
 READ_CPT = frame("10 02 01 0f 20 00 fe 00 00 00 d2 00 00 00 00 00 00 00 00 12")
+# ladder reads on segment %R (0xA4), same session, NC idle in AUTO with %9001 selected
+LADDER_R5_0 = frame("10 02 01 09 20 00 fe 00 00 00 66 00 80 20")  # %R5.0 E_CNPRET = 1
+LADDER_R5_1 = frame("10 02 01 09 20 00 fe 00 00 00 66 01 00 a1")  # %R5.1 E_PROG = 0
+LADDER_R16_B = frame("10 02 01 09 20 00 fe 00 00 00 66 40 00 e0")  # %R16.B MODCOUR = AUTO
+LADDER_R1A_W = frame("10 02 01 0a 20 00 fe 00 00 00 66 41 29 23 2e")  # %R1A.W PROGCOUR = 9001
+LADDER_R6_L = frame("10 02 01 0c 20 00 fe 00 00 00 66 42 00 00 00 00 e5")  # %R6.L AXMVT = 0
+LADDER_R1A_W_X2 = frame("10 02 01 0c 20 00 fe 00 00 00 66 41 29 23 00 00 30")  # QUANTITY 2
 
 
 def test_mirror():
@@ -93,3 +101,23 @@ def test_stations():
 
 def test_read_cpt():
     assert parse_unit_fault_history(unwrap_unite_response(READ_CPT)) == (0, 0, 0, 0)
+
+
+def test_ladder_bit_reads():
+    # a set bit comes back as 0x80, a clear one as 0x00; the specific byte (bit number) is echoed
+    assert unwrap_unite_response(LADDER_R5_0) == [0x66, 0x00, 0x80]
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_R5_0), "0") is True
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_R5_1), "1") is False
+
+
+def test_ladder_byte_word_long():
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_R16_B), "B") == Mode.AUTO
+    # 29 23 on the wire: little-endian, as 938914 §2 says - not the PLC's own MSB-first layout
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_R1A_W), "W") == 9001
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_R6_L), "L") == 0
+
+
+def test_ladder_quantity_counts_objects():
+    # QUANTITY 2 with specific 65 (word) -> 4 data bytes: %R1A.W = 9001, %R1C.W = 0
+    unite = unwrap_unite_response(LADDER_R1A_W_X2)
+    assert unite == [0x66, 65, 0x29, 0x23, 0x00, 0x00]

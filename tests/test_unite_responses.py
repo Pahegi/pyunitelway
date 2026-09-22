@@ -2,11 +2,12 @@
 
 import pytest
 
-from pyunitelway.errors import OperationInProgrammeArea, UnexpectedAdditionalAwnserCode
+from pyunitelway.errors import OperationInProgrammeArea, UnexpectedAdditionalAwnserCode, UnexpectedDataLength, UnexpectedObjectTypeResponse
 from pyunitelway.num_constants import Mode
 from pyunitelway.unite_responses import (
     parse_available_bytes_in_ram,
     parse_ladder_read_response,
+    parse_ladder_variable,
     parse_mirror_result,
     parse_shutdown_result,
     parse_stations_managed_by_master,
@@ -47,17 +48,63 @@ def test_parse_write_result():
     assert parse_write_result([0x66]) is False
 
 
+class TestParseLadderVariable:
+    def test_fields(self):
+        assert parse_ladder_variable("%R1A.W") == ("%R", 0xA4, 0x1A, "W", None)
+        assert parse_ladder_variable("%R5.1") == ("%R", 0xA4, 0x05, "1", None)
+        assert parse_ladder_variable("%V80.L") == ("%V", 0xA0, 0x80, "L", None)
+        assert parse_ladder_variable("%R5.3")[3] == "3"
+
+    def test_invalid_symbol_and_size_are_value_errors(self):
+        with pytest.raises(ValueError):
+            parse_ladder_variable("%Y10.B")
+        with pytest.raises(ValueError):
+            parse_ladder_variable("%R10.X")
+        with pytest.raises(ValueError):
+            parse_ladder_variable("%R10")
+
+    def test_bounds(self):
+        # 938914 §4.1.3.3: %R last object 0x0F7F, low byte <= 0x7F; %I/%Q low byte <= 0x3F
+        with pytest.raises(ValueError):
+            parse_ladder_variable("%R1000.B")
+        with pytest.raises(ValueError):
+            parse_ladder_variable("%R180.B")
+        with pytest.raises(ValueError):
+            parse_ladder_variable("%I40.B")
+        parse_ladder_variable("%I3F.B")
+        parse_ladder_variable("%R17F.B")
+
+    def test_index_unsupported(self):
+        with pytest.raises(NotImplementedError):
+            parse_ladder_variable("%V10.W[2]")
+
+
 class TestParseLadderReadResponse:
-    # pins the current contract: [answer code, object type, object bytes...]
+    # 938914 §4.1.1: answer code / echoed specific byte / data; §4.1.3.3: specific = bit n, 64, 65, 66
 
-    def test_bit_set(self):
-        assert parse_ladder_read_response([0x66, 0xA0, 0x00, 0b00000010], "1") == 1
+    def test_bit(self):
+        assert parse_ladder_read_response([0x66, 0x01, 0x01], "1") is True
+        assert parse_ladder_read_response([0x66, 0x00, 0x00], "0") is False
 
-    def test_bit_clear(self):
-        assert parse_ladder_read_response([0x66, 0xA0, 0x00, 0b00000010], "0") == 0
+    def test_byte_is_signed(self):
+        assert parse_ladder_read_response([0x66, 64, 0x2A], "B") == 42
+        assert parse_ladder_read_response([0x66, 64, 0xFF], "B") == -1
 
-    def test_word(self):
-        assert parse_ladder_read_response([0x66, 0xA0, 0x01, 0x34, 0x12], "W") == 0x1234
+    def test_word_little_endian_signed(self):
+        assert parse_ladder_read_response([0x66, 65, 0x29, 0x23], "W") == 9001
+        assert parse_ladder_read_response([0x66, 65, 0xFF, 0xFF], "W") == -1  # %R1A.W: no active programme
+
+    def test_long_and_address(self):
+        assert parse_ladder_read_response([0x66, 66, 0x00, 0x00, 0x00, 0x80], "L") == -2**31
+        assert parse_ladder_read_response([0x66, 66, 0x00, 0x00, 0x00, 0x80], "&") == 0x80000000
+
+    def test_wrong_specific_byte_raises(self):
+        with pytest.raises(UnexpectedObjectTypeResponse):
+            parse_ladder_read_response([0x66, 64, 0x2A], "W")
+
+    def test_wrong_length_raises(self):
+        with pytest.raises(UnexpectedDataLength):
+            parse_ladder_read_response([0x66, 65, 0x29], "W")
 
 
 def test_parse_unit_identification():

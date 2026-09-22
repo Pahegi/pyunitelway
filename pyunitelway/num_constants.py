@@ -17,6 +17,22 @@ ladder_size = {
     "&": 4
 }
 
+# 938914 §4.1.3.3: specific byte = object size (a bit uses its own number 0-7)
+ladder_specific = {
+    "B": 64,
+    "W": 65,
+    "L": 66,
+    "&": 66
+}
+
+# 938914 §4.1.3.3 footnotes: max low byte of the address
+symbol_low_byte_max = {
+    "%R": 0x7F,
+    "%W": 0x7F,
+    "%I": 0x3F,
+    "%Q": 0x3F
+}
+
 class Mode(IntEnum):
     AUTO = 0x0000
     SINGLE_STEP = 0x0001

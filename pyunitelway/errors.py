@@ -55,3 +55,8 @@ class NoPollingWindow(UnitelwayError):
             "Check the adapter IP/port and that the NUM is powered on; run example/listen.py "
             "to see which link addresses the master actually polls"
         )
+
+
+class UnexpectedDataLength(UnitelwayError):
+    def __init__(self, expected, data):
+        super().__init__(f"Expected {expected} data byte(s), got {len(data)}: {' '.join(f'{b:02X}' for b in data)}")
