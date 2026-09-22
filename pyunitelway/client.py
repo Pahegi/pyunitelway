@@ -9,7 +9,7 @@ import time
 
 from pyunitelway.constants import *
 from pyunitelway.conversion import unwrap_unite_response
-from pyunitelway.errors import NoPollingWindow, UnexpectedUniteResponse
+from pyunitelway.errors import NoPollingWindow, NoUniteResponse, UnexpectedUniteResponse
 from pyunitelway.unite_responses import (
     parse_available_bytes_in_ram,
     parse_ladder_read_response,
@@ -30,7 +30,6 @@ from pyunitelway.utils import (
     get_response_code,
     is_valid_response_code,
     ladder_specific_byte,
-    sublist_in_list,
 )
 
 log = logging.getLogger(__name__)
@@ -116,101 +115,152 @@ class UnitelwayClient:
         """Send a UNI-TE request."""
         self._unitelway_query(self._unite_to_unitelway(query), text)
 
-    # ------- receive -------
+    # ------- receive (35000789 §3.5, §3.6, §3.12) -------
 
-    def _wait_unite_response(self, timeout=TIMEOUT_SEC):
-        """Wait for a ``<DLE><STX>`` frame addressed to us, skipping polls (35000789 §3.6).
+    def _recv_exact(self, n, deadline):
+        """Read exactly ``n`` bytes before ``deadline`` (a ``time.time()`` value, ``None`` = no limit)."""
+        data = bytearray()
+        while len(data) < n:
+            if deadline is None:
+                self.socket.settimeout(None)
+            else:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    raise socket.timeout()
+                self.socket.settimeout(remaining)
+            chunk = self.socket.recv(n - len(data))
+            if not chunk:
+                raise ConnectionError("Adapter closed the connection")
+            data += chunk
+        return data
 
-        :returns: Received bytes from the frame start, or ``None`` on timeout
+    def _drain(self):
+        """Discard buffered bytes so the next poll we act on is a fresh one."""
+        self.socket.setblocking(False)
+        dropped = 0
+        try:
+            while True:
+                chunk = self.socket.recv(4096)
+                if not chunk:
+                    raise ConnectionError("Adapter closed the connection")
+                dropped += len(chunk)
+        except (BlockingIOError, socket.timeout):
+            pass
+        finally:
+            self.socket.setblocking(True)
+        if dropped:
+            log.debug("drained %d stale byte(s)", dropped)
+
+    def is_my_turn_to_talk(self, address, timeout=POLLING_TIMEOUT_SEC):
+        """Wait for a fresh ``<DLE><ENQ><address>`` poll.
+
+        :raises NoPollingWindow: No poll for ``address`` within ``timeout`` seconds
+        :raises ConnectionError: The adapter closed the connection
         """
-        start = time.time()
-        buf = []
-        while True:
-            r = self.socket.recv(3)
-            if (not r) or (not buf and len(r) == 1 and r[0] == NAK):
-                raise Exception(f"NAK received ({r!r})")
-            log.debug("rx %s", format_hex_list(r))
-            buf.extend(r)
+        self._drain()
+        deadline = time.time() + timeout
+        try:
+            while True:
+                if self._recv_exact(1, deadline)[0] != DLE:
+                    continue
+                if self._recv_exact(1, deadline)[0] != ENQ:
+                    continue
+                polled = self._recv_exact(1, deadline)[0]
+                if polled == address:
+                    log.debug("polled at 0x%02X", address)
+                    return True
+                log.debug("poll for 0x%02X", polled)
+        except socket.timeout:
+            raise NoPollingWindow(address, timeout)
+        finally:
+            self.socket.settimeout(None)
 
-            found, index = sublist_in_list(buf, [DLE, ENQ])  # TODO B3: may hit frame data
-            if found:
-                del buf[index:index + 3]
+    def _read_frame(self, timeout):
+        """Read the next frame addressed to us: ``<DLE><STX><addr><len>[<DLE>]<data, DLEs doubled><BCC>``.
 
-            found, idx = sublist_in_list(buf, [DLE, STX])
-            if found:
-                buf.extend(self.socket.recv(1))
-                if buf[idx + 2] == self.link_address:
-                    break
+        Polls, ACKs and other stations' frames are skipped.
 
-            if not self.VPN_Mode and time.time() - start >= timeout:
-                log.warning("no answer within %.1f s", timeout)
-                return None
-
-        buf = buf[idx:]
-        buf.extend(self.socket.recv(256))
-        return buf
+        :param float timeout: Seconds, ``None`` for no limit
+        :returns: Raw frame bytes, or ``None`` on NAK or timeout
+        """
+        deadline = None if timeout is None else time.time() + timeout
+        try:
+            while True:
+                b = self._recv_exact(1, deadline)[0]
+                if b == ACK:
+                    log.debug("rx ACK")
+                    continue
+                if b == NAK:
+                    log.warning("rx NAK: the master rejected our frame")
+                    return None
+                if b != DLE:
+                    log.debug("rx stray %02X", b)
+                    continue
+                b = self._recv_exact(1, deadline)[0]
+                if b == ENQ:
+                    log.debug("rx poll for 0x%02X", self._recv_exact(1, deadline)[0])
+                    continue
+                if b != STX:
+                    log.debug("rx stray 10 %02X", b)
+                    continue
+                frame = [DLE, STX, *self._recv_exact(2, deadline)]
+                length = frame[3]
+                if length == DLE:
+                    frame += self._recv_exact(1, deadline)  # doubled length byte
+                read = 0
+                while read < length:
+                    frame += self._recv_exact(1, deadline)
+                    read += 1
+                    if frame[-1] == DLE:
+                        frame += self._recv_exact(1, deadline)  # doubled data DLE, not counted
+                frame += self._recv_exact(1, deadline)  # BCC
+                if frame[2] != self.link_address:
+                    log.debug("rx frame for 0x%02X ignored: %s", frame[2], format_hex_list(frame))
+                    continue
+                log.debug("rx %s", format_hex_list(frame))
+                return frame
+        except socket.timeout:
+            log.warning("no answer%s", f" within {timeout:.1f} s" if timeout is not None else "")
+            return None
+        finally:
+            self.socket.settimeout(None)
 
     def _unite_query_until_response(self, address, query, timeout=TIMEOUT_SEC, text=""):
-        """Send a request in a polling window and wait for its answer, resending on timeout.
+        """Send a request in a polling window and read its answer frame; up to ``MAX_RETRIES`` attempts.
 
-        :returns: Raw UNI-TELWAY answer bytes
+        :returns: Raw UNI-TELWAY answer frame
+        :raises NoUniteResponse: No answer after ``MAX_RETRIES`` attempts
         """
-        r = None
-        while r is None:
+        for attempt in range(1, MAX_RETRIES + 1):
             if not self.VPN_Mode:
                 self.is_my_turn_to_talk(address)
             self._unite_query(query, text)
-            r = self._wait_unite_response(timeout)
-            if r is None:
-                log.warning("%s: resending", text)
-        return r
+            frame = self._read_frame(None if self.VPN_Mode else timeout)
+            if frame is not None:
+                return frame
+            log.warning("%s: attempt %d/%d failed", text, attempt, MAX_RETRIES)
+        raise NoUniteResponse(text, MAX_RETRIES)
 
     def run_unite(self, address, query, timeout=TIMEOUT_SEC, text=""):
         """Send a UNI-TE request and return the UNI-TE answer bytes.
 
         :param int address: Our link address
         :param list[int] query: UNI-TE request
-        :param float timeout: Seconds to wait for the answer before resending
+        :param float timeout: Seconds to wait for the answer per attempt
         :param str text: Request name for the log
         :rtype: list[int]
         :raises NoPollingWindow: The master never polled ``address``
+        :raises NoUniteResponse: No answer after ``MAX_RETRIES`` attempts
         :raises BadUnitelwayChecksum: Bad BCC
         :raises RefusedUnitelwayMessage: X-WAY service code ``0x22``
         :raises UniteRequestFailed: UNI-TE answer ``0xFD``
         """
-        r = self._unite_query_until_response(address, query, timeout, text)
+        frame = self._unite_query_until_response(address, query, timeout, text)
         if not self.VPN_Mode:
             self._unitelway_query([ACK])  # 35000789 §3.6
-        unite = unwrap_unite_response(r)
+        unite = unwrap_unite_response(frame)
         log.info("%s -> %s", text, format_hex_list(unite))
         return unite
-
-    def is_my_turn_to_talk(self, address, timeout=POLLING_TIMEOUT_SEC):
-        """Block until the master polls ``address`` with ``<DLE><ENQ><address>`` (35000789 §3.6).
-
-        :raises NoPollingWindow: No poll within ``timeout`` seconds
-        :raises ConnectionError: The adapter closed the connection
-        """
-        buf = []
-        start = time.time()
-        self.socket.settimeout(timeout)
-        try:
-            while True:
-                try:
-                    r = self.socket.recv(3)
-                except socket.timeout:
-                    raise NoPollingWindow(address, timeout)
-                if not r:
-                    raise ConnectionError("Adapter closed the connection while waiting for a polling window")
-                log.debug("rx %s", format_hex_list(r))
-                buf.extend(r)
-                if sublist_in_list(buf, [DLE, ENQ, address])[0]:
-                    log.debug("polled at 0x%02X", address)
-                    return True
-                if time.time() - start >= timeout:
-                    raise NoPollingWindow(address, timeout)
-        finally:
-            self.socket.settimeout(None)
 
     # ------- objects (938914 §4.1) -------
 

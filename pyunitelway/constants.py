@@ -10,6 +10,7 @@ TERT_MIN = 150  # TEST
 
 TIMEOUT_SEC = 2  # Time between message sent and received in second
 POLLING_TIMEOUT_SEC = 10  # Max wait for the master's <DLE><ENQ><addr> poll before giving up
+MAX_RETRIES = 3  # send + wait attempts per request before NoUniteResponse
 
 # Special chars
 DLE = 0x10

@@ -60,3 +60,8 @@ class NoPollingWindow(UnitelwayError):
 class UnexpectedDataLength(UnitelwayError):
     def __init__(self, expected, data):
         super().__init__(f"Expected {expected} data byte(s), got {len(data)}: {' '.join(f'{b:02X}' for b in data)}")
+
+
+class NoUniteResponse(UnitelwayError):
+    def __init__(self, text, attempts):
+        super().__init__(f"No answer to {text or 'the request'} after {attempts} attempt(s)")

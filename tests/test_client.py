@@ -11,6 +11,7 @@ import pytest
 from pyunitelway.client import UnitelwayClient
 from pyunitelway.constants import (
     ADDITIONAL_ANSWER_CODES,
+    MAX_RETRIES,
     READ_MEMORY_FREE,
     RESPONSE_CODES,
     SHUTDOWN,
@@ -19,11 +20,16 @@ from pyunitelway.constants import (
 )
 from pyunitelway.errors import (
     NoPollingWindow,
+    NoUniteResponse,
     UnexpectedAdditionalAwnserCode,
     UnexpectedUniteResponse,
     UniteRequestFailed,
 )
+from pyunitelway.conversion import unwrap_unite_response
 from pyunitelway.utils import check_specific_answer, is_valid_response_code
+
+import test_hardware_vectors as hv
+from test_conversion import wire_frame
 
 # 938914 §4.15 layout: F5 / 77 / status 00 / 1 long word (little-endian)
 MEMORY_FREE_ANSWER = [0xF5, 0x77, 0x00, 0xD0, 0x10, 0x01, 0x00]
@@ -104,49 +110,117 @@ class TestShutdown:
 
 
 class FakeSocket:
-    """Replays canned recv() chunks, then behaves like a socket that timed out."""
+    """``stale`` is what is already buffered (drained non-blocking); ``live`` arrives afterwards."""
 
-    def __init__(self, chunks):
-        self.chunks = list(chunks)
+    def __init__(self, live=b"", stale=b"", closed=False):
+        self.live = bytearray(live)
+        self.stale = bytearray(stale)
+        self.closed = closed
+        self.sent = bytearray()
+        self.blocking = True
         self.timeout = "untouched"
 
     def settimeout(self, t):
         self.timeout = t
 
+    def setblocking(self, flag):
+        self.blocking = flag
+
     def recv(self, n):
-        if self.chunks:
-            return self.chunks.pop(0)
-        raise socket.timeout()
+        if not self.blocking:
+            if not self.stale:
+                raise BlockingIOError()
+            out = bytes(self.stale[:n])
+            del self.stale[:n]
+            return out
+        if not self.live:
+            if self.closed:
+                return b""
+            raise socket.timeout()
+        out = bytes(self.live[:n])
+        del self.live[:n]
+        return out
 
     def sendall(self, data):
-        pass
+        self.sent += data
+
+
+POLL_01, POLL_02 = b"\x10\x05\x01", b"\x10\x05\x02"
 
 
 class TestIsMyTurnToTalk:
-    def test_returns_once_our_address_is_polled(self):
+    def test_waits_for_a_fresh_poll(self):
         c = UnitelwayClient(slave_address=0x01)
-        c.socket = FakeSocket([b"\x10\x05\x02", b"\x10\x05\x01"])
+        c.socket = FakeSocket(live=POLL_02 + POLL_01, stale=POLL_01 * 5)
         assert c.is_my_turn_to_talk(0x01, timeout=1) is True
+        assert c.socket.stale == b""  # buffered polls were discarded, not used
+        assert c.socket.live == b""
         assert c.socket.timeout is None  # blocking mode restored afterwards
 
     def test_raises_when_only_other_addresses_are_polled(self):
         c = UnitelwayClient(slave_address=0x01)
-        c.socket = FakeSocket([b"\x10\x05\x02"] * 3)
+        c.socket = FakeSocket(live=POLL_02 * 3)
         with pytest.raises(NoPollingWindow):
             c.is_my_turn_to_talk(0x01, timeout=1)
         assert c.socket.timeout is None
 
     def test_raises_on_a_silent_link(self):
         c = UnitelwayClient(slave_address=0x01)
-        c.socket = FakeSocket([])
+        c.socket = FakeSocket()
         with pytest.raises(NoPollingWindow):
             c.is_my_turn_to_talk(0x01, timeout=1)
 
     def test_closed_connection_is_not_a_polling_problem(self):
         c = UnitelwayClient(slave_address=0x01)
-        c.socket = FakeSocket([b""])
+        c.socket = FakeSocket(closed=True)
         with pytest.raises(ConnectionError):
             c.is_my_turn_to_talk(0x01, timeout=1)
+
+
+class TestReadFrame:
+    # 35000789 §3.5/§3.12: <DLE><STX><addr><len>[<DLE>]<data with DLEs doubled><BCC>
+
+    @staticmethod
+    def read(wire):
+        c = UnitelwayClient(slave_address=0x01)
+        c.socket = FakeSocket(live=wire)
+        return c._read_frame(1)
+
+    def test_skips_polls_and_ack(self):
+        assert self.read(POLL_01 + b"\x06" + POLL_01 + bytes(hv.MIRROR)) == hv.MIRROR
+
+    def test_dle_enq_inside_data_is_kept(self):
+        # the old loop deleted every <DLE><ENQ> pair it saw, even inside a frame (todo.md B3)
+        frame = wire_frame(0x01, [0x20, 0x00, 0xFE, 0x00, 0x00, 0x00, 0xFB, 0x10, 0x05])
+        assert self.read(bytes(frame)) == frame
+        assert unwrap_unite_response(frame) == [0xFB, 0x10, 0x05]
+
+    def test_length_equal_to_dle_is_doubled(self):
+        frame = wire_frame(0x01, [0x20, 0x00, 0xFE, 0x00, 0x00, 0x00] + list(range(10)))  # 16-byte NPDU
+        assert frame[3:5] == [0x10, 0x10]
+        assert self.read(bytes(frame)) == frame
+        assert unwrap_unite_response(frame) == list(range(10))
+
+    def test_other_stations_frame_is_skipped(self):
+        other = wire_frame(0x02, [0x20, 0x00, 0xFE, 0x00, 0x00, 0x00, 0xFB])
+        assert self.read(bytes(other) + bytes(hv.MIRROR)) == hv.MIRROR
+
+    def test_nak_and_timeout_give_none(self):
+        assert self.read(b"\x15") is None
+        assert self.read(POLL_01 * 4) is None
+
+    def test_captured_frames_between_polls(self):
+        for frame in (hv.STATUS, hv.IDENTIFICATION, hv.LADDER_R1A_W_X2):
+            assert self.read(POLL_01 + bytes(frame) + POLL_01) == frame
+
+
+class TestRetries:
+    def test_gives_up_after_max_retries(self):
+        c = UnitelwayClient(VPN_Mode=True)  # no polling window needed
+        c.socket = FakeSocket()
+        with pytest.raises(NoUniteResponse):
+            c._unite_query_until_response(0x01, [0xFA, 0x00], timeout=0.01, text="MIRROR")
+        assert c.socket.sent.count(b"\x10\x02\x01") == MAX_RETRIES
 
 
 class TestReadLadder:
