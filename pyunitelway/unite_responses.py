@@ -25,14 +25,18 @@ def parse_unit_identification(received_data):
 
     :param list[int] received_data: Received data in the response
 
-    :returns: Unit identification dict containing "product_type", "subtype", "product_version" and "text".
+    :returns: Unit identification dict containing "product_type_code", "product_type", "subtype",
+        "product_version" (index from the high half-byte) and "text".
     :rtype: dict[str: Any]
     """
     resp = list(received_data)
 
     data = {}
 
+    # 938914 §4.3 table. The NUM 1060 Series II UC SII in Darmstadt answers 102 with the text
+    # "NUM1060S2UCS2" (captured 2026-09-22), so trust ``text`` over this mapping.
     product_type = resp[1]
+    data["product_type_code"] = product_type
     match product_type:
         case 100:
             data["product_type"] = "NUM 1060"
@@ -42,14 +46,18 @@ def parse_unit_identification(received_data):
             data["product_type"] = "NUM 1040"
         case 103:
             data["product_type"] = "NUM 1060-7"
+        case _:
+            data["product_type"] = f"unknown ({product_type})"
 
     subtype = chr(resp[2])
     data["subtype"] = subtype
 
-    product_version = resp[3]
-    data["product_version"] = product_version
+    # 938914 §4.3: the first half-byte is the version index (H'30' -> index 3)
+    data["product_version"] = resp[3] >> 4
 
-    text = resp[5:]
+    # 938914 §4.3: ASCII string beginning with a length byte
+    length = resp[4]
+    text = resp[5:5 + length]
     text = ''.join([chr(i) for i in text])
     data["text"] = text
 
@@ -342,13 +350,16 @@ def parse_stations_managed_by_master(response):
 
     :param list[int] response: Response **with** UNI-TE response code
 
-    :returns: number of stations managed and their status (connected/unconnected as list of bool)
+    :returns: number of stations managed and their status (connected/unconnected as list of bool,
+        index = rank; on the Darmstadt bus rank 0 is the single managed slave, link address 1)
     :rtype: (int, list[bool])
     """
     resp = list(response)
     r = resp[1:]
     num_stations = read_byte(r)
-    # 938914 §4.7: 1 bit per station, rank = link address -> station i is bit i % 8 of byte i // 8
-    status = [(r[i // 8] >> (i % 8)) & 1 == 1 for i in range(num_stations)]
+    # 938914 §4.7: 1 bit per station, rank = station address. The manual does not give the bit
+    # order; the NUM 1060 answered D3 01 80 while this client was connected as link address 1
+    # (2026-09-22), so the bits run from the MSB: station i is bit 7 - i % 8 of byte i // 8.
+    status = [(r[i // 8] >> (7 - i % 8)) & 1 == 1 for i in range(num_stations)]
     return num_stations, status
 

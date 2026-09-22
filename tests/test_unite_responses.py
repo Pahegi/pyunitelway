@@ -61,12 +61,14 @@ class TestParseLadderReadResponse:
 
 
 def test_parse_unit_identification():
-    r = [0x3F, 101, ord("A"), 3, 0x00, ord("N"), ord("U"), ord("M")]
+    # 938914 §4.3: type / subtype letter / version index in the high half-byte / length byte + ASCII
+    r = [0x3F, 101, ord("A"), 0x30, 0x03, ord("N"), ord("U"), ord("M"), 0xAA]
     data = parse_unit_identification(r)
+    assert data["product_type_code"] == 101
     assert data["product_type"] == "NUM 1060 Series II"
     assert data["subtype"] == "A"
     assert data["product_version"] == 3
-    assert data["text"] == "NUM"
+    assert data["text"] == "NUM"  # the length byte bounds the string; the trailing 0xAA is not text
 
 
 def test_parse_unit_fault_history():
@@ -81,13 +83,15 @@ def test_parse_shutdown_result():
 
 
 class TestParseStationsManagedByMaster:
-    # 938914 §4.7: H'D3' / number of stations / 1 bit per station, rank = link address
+    # 938914 §4.7: H'D3' / number of stations / 1 bit per station, rank = link address.
+    # The bit order is not in the manual; MSB-first is what the machine answered
+    # (tests/test_hardware_vectors.py).
 
     def test_three_stations(self):
-        assert parse_stations_managed_by_master([0xD3, 0x03, 0x05]) == (3, [True, False, True])
+        assert parse_stations_managed_by_master([0xD3, 0x03, 0xA0]) == (3, [True, False, True])
 
     def test_more_than_eight_stations_span_bytes(self):
-        n, status = parse_stations_managed_by_master([0xD3, 10, 0x01, 0x02])
+        n, status = parse_stations_managed_by_master([0xD3, 10, 0x80, 0x40])
         assert n == 10
         assert [i for i, connected in enumerate(status) if connected] == [0, 9]
 

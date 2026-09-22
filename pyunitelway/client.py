@@ -20,9 +20,10 @@ class UnitelwayClient:
     The sender PC is considered a slave, and the contacted PLC is the master.
 
     .. NOTE::
-        In our tests, the NUM 1060 worked only with the following settings:
+        On the NUM 1060 Series II UC SII in Darmstadt the master polls exactly one link address,
+        ``0x01`` (checked with ``example/listen.py``, 2026-09-22), and answers with:
 
-        * slave_address = 0x00
+        * slave_address = 0x01
         * category_code = 0x00
         * xway_network = 0x00
         * xway_station = 0xFE
