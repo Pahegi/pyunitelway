@@ -18,3 +18,4 @@ pytest = "^7.0"
 [tool.poetry.scripts]
 debug_server = "example.debug_server:main"
 test = "example.test:main"
+listen = "example.listen:main"

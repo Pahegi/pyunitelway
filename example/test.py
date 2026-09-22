@@ -1,37 +1,79 @@
+"""Read-only connectivity check against the NUM 1060.
+
+Every request below is a read. The writes (mode selection, supervisor message, ladder writes,
+shutdown) stay commented out; uncomment one deliberately, never as a side effect of a test run.
+
+Runs at debug level 2 and tees the whole output, every wire byte included, to
+``example/logs/test-<timestamp>.log`` so the machine's real answers can become test vectors.
+Each request runs in its own try/except so one failure does not hide the others.
+"""
+
+import sys
+import traceback
+from datetime import datetime
+from pathlib import Path
+
 from pyunitelway import UnitelwayClient
 from pyunitelway.num_constants import Object, Mode
 
-debug = 0
+debug = 2
+
+ADAPTER_IP = "10.1.70.202"
+ADAPTER_PORT = 8234
+
+
+class Tee:
+    """Write to the terminal and to a line-buffered log file at the same time."""
+
+    def __init__(self, path):
+        self.terminal = sys.stdout
+        self.file = open(path, "w", buffering=1)
+
+    def write(self, text):
+        self.terminal.write(text)
+        self.file.write(text)
+
+    def flush(self):
+        self.terminal.flush()
+        self.file.flush()
+
+
+def attempt(label, call):
+    """Run one request, print its result or its traceback, and carry on."""
+    print(f"\n======== {label} ========", flush=True)
+    try:
+        result = call()
+        print(f"{label} -> {result!r}", flush=True)
+        return result
+    except Exception:
+        print(f"{label} FAILED:", flush=True)
+        traceback.print_exc(file=sys.stdout)
+        return None
 
 
 def main():
-    client = UnitelwayClient()
-    # client.connect_socket("10.1.70.9", 8234)
-    client.connect_socket("127.0.0.1", 8234)  # used for debug mockup server
+    log_dir = Path(__file__).parent / "logs"
+    log_dir.mkdir(exist_ok=True)
+    log_path = log_dir / f"test-{datetime.now():%Y%m%d-%H%M%S}.log"
+    sys.stdout = Tee(log_path)
+    print(f"Logging to {log_path}")
 
-    # mirror request
-    print(client.mirror([0x00], debug))  # returns true if mirror request was successful (basically ping num 1060)
+    client = UnitelwayClient()  # slave_address=0x01 by default - check with `poetry run listen` first
+    client.connect_socket(ADAPTER_IP, ADAPTER_PORT)
+    # client.connect_socket("127.0.0.1", 8234)  # used for debug mockup server
 
-    # unit identification
-    # print(client.get_unit_identification(debug))  # returns type of unit (e.g. NUM 1060 UC SII)
+    # ---- read-only requests ----
+    attempt("mirror", lambda: client.mirror([0x00], debug))  # ping the NUM 1060
+    attempt("unit identification", lambda: client.get_unit_identification(debug))  # e.g. NUM 1060 UC SII
+    attempt("unit status", lambda: client.get_unit_status(debug=debug))  # mode, programme number, G functions, ...
+    attempt("available bytes in NC RAM", lambda: client.get_available_bytes_in_ram(debug))
+    attempt("read object: mode", lambda: client._read_objects(Object.MODE_SELECTION, 0x00, 0x00, 0x01, debug))
+    attempt("stations managed by master", lambda: client.get_stations_managed_by_master(debug))
+    attempt("unit fault history", lambda: client.get_unit_fault_history(debug))
 
-    # get unit status data
-    # print(client.get_unit_status(debug))  # returns status data (e.g. current mode, program number, active G-code, etc.)
-
-    # get number of bytes available in NC RAM
-    # print(client.get_available_bytes_in_ram(debug))
-
-    # send message by the supervisor
-    # print(client.write_message("Hello World!", debug))  # sends message to network messages menu
-
-    # read object request (mode)
-    # print(client._read_objects(Object.MODE_SELECTION, 0x00, 0x00, 0x01))  # returns current mode
-
-    # write object request (mode)
-    # print(client._write_objects(Object.MODE_SELECTION, 0x00, 0x00, 0x01, [Mode.AUTO, 0x00]))  # sets mode to MDI
-
-    # print(client.get_stations_managed_by_master())
-    # print(client.get_unit_fault_history())
+    # ---- writes: keep commented out unless you mean it ----
+    # print(client.write_message("Hello World!", debug))  # displays text on the NC (A8: cannot send yet)
+    # print(client._write_objects(Object.MODE_SELECTION, 0x00, 0x00, 0x01, [Mode.MDI, 0x00], debug))  # sets the mode (Mode.AUTO = 0, Mode.MDI = 2)
 
     # read ladder
     # print(client.read_ladder("%R5.1"))  # program active
