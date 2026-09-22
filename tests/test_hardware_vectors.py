@@ -55,13 +55,22 @@ def test_status():
     status = parse_unit_status(unite)
     assert not any(status["current_status"].values())
     assert status["status_mask"]["system_reset"] and status["status_mask"]["critical_operation"]
+    # the idle NC's power-on modal set - only readable with the G functions first (938846 §15.2
+    # order, not 938914 §4.1.3) and the corrected bit numbering; the old numbering gives G19 G91 G41 G29
+    assert [g for g, on in status["list_of_g_functions"].items() if on] == ["G01", "G17", "G90", "G40", "G54", "G94", "G97"]
+    assert status["active_program_number"] == 9001  # on the wire: 90010
+    assert status["active_block_number"] == 0
+    assert status["program_error_number"] == 0
+    assert status["tool_number"] == 0
+    assert status["tool_direction"] == {"x": 0, "y": 0, "z": -1}  # vertical machine: tool axis Z-
+    assert not any(status["list_of_processes_remaining"].values())
+    assert status["operator_panel_status"]["cycle_in_progress"] is False
+    assert status["nc_status"]["cnc_ready"] is True and status["nc_status"]["active_program"] is False
     assert status["nc_mode"] == Mode.AUTO
-    assert status["nc_status"] == 1
+    assert status["machine_error_number"] == 0
     assert status["current_program_number"] == 9001
     assert status["plc_status"] == "running"
-    assert status["tool_direction"] == {"x": 0, "y": 0, "z": 0}
-    # the only G bit set is bit 2 - the same G02 under the old and the corrected numbering
-    assert [g for g, on in status["list_of_g_functions"].items() if on] == ["G02"]
+    assert status["plc_memory_field"] == [0, 0, 0] + [0xFF] * 16
 
 
 def test_memory_free():

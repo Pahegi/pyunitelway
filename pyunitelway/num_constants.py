@@ -29,8 +29,10 @@ class Mode(IntEnum):
     HOMING = 0x0008
     SHIFT = 0x0009
     TOOL_SET = 0x000A
+    NONE = 0x000B  # 938846 §3.8.1.9: no mode active
     LOAD = 0x000D
     UNLOAD = 0x000F
+    INDEPENDENT_GROUPS = 0x0010  # 938846 §3.8.1.9
 
 
 class Object(IntEnum):

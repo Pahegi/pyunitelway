@@ -105,18 +105,21 @@ class TestParseUnitStatus:
 
     @staticmethod
     def answer(g_functions=0, tool_direction=0, nc_mode=0):
+        # field order per 938846 §15.2 (G functions first), sizes per 938914 §4.1.3
         segment_153 = (
-            [0x28, 0x23, 0x00, 0x00]  # active programme 9000
-            + [0x0A, 0x00]  # active block 10
+            list(g_functions.to_bytes(4, "little"))
+            + list((9000 * 10).to_bytes(4, "little"))  # active programme %9000, sent x10
+            + [0x0A, 0x00]  # current block 10
             + [0x00, 0x00] + [0x00, 0x00]  # no programme error
             + [0x58, 0x02]  # tool 600
             + list(tool_direction.to_bytes(2, "little"))
             + [0x01, 0x00]  # corrector 1
-            + list(g_functions.to_bytes(4, "little"))
             + [0x00, 0x00]  # nothing left to execute
         )
         assert len(segment_153) == 22
-        return [0x61, 0x00, 0x30] + segment_153 + [0x00, 0x01, nc_mode, 0x00, 0x28, 0x23, 0x02] + [0xFF] * 16
+        # panel %R3.B = cycle in progress / NC status %R5.B = ready + programme active / mode /
+        # ERRMACH / PROGCOUR 9000 / PLC running
+        return [0x61, 0x00, 0x30] + segment_153 + [0x04, 0x03, nc_mode, 0x00, 0x28, 0x23, 0x02] + [0xFF] * 16
 
     def test_g90_is_bit_11(self):
         g = parse_unit_status(self.answer(g_functions=1 << 11))["list_of_g_functions"]
@@ -141,7 +144,14 @@ class TestParseUnitStatus:
 
     def test_fixed_fields(self):
         s = parse_unit_status(self.answer(nc_mode=2))
+        assert s["active_program_number"] == 9000 and s["active_program_index"] == 0
+        assert s["active_block_number"] == 10
         assert s["tool_number"] == 600
+        assert s["tool_corrector"] == 1
+        assert s["operator_panel_status"]["cycle_in_progress"] is True
+        assert s["nc_status"]["cnc_ready"] is True and s["nc_status"]["active_program"] is True
         assert s["nc_mode"] == Mode.MDI
+        assert s["machine_error_number"] == 0
         assert s["current_program_number"] == 9000
         assert s["plc_status"] == "running"
+        assert s["plc_memory_field"] == [0xFF] * 16

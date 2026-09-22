@@ -70,7 +70,9 @@ def parse_unit_status(received_data):
     :param list[int] received_data: Received data in the response
 
     :returns: Unit status dict. ``tool_direction`` holds ``+1`` / ``-1`` / ``0`` per axis,
-        ``list_of_g_functions`` one ``0``/``1`` per G function.
+        ``list_of_g_functions`` one ``0``/``1`` per G function, ``operator_panel_status`` and
+        ``nc_status`` the named bits of ``%R3.B`` / ``%R5.B`` (938846 §3.8.1) plus the raw ``byte``,
+        ``machine_error_number`` the ``%R18.B`` ERRMACH byte, ``plc_memory_field`` every byte after it.
     :rtype: dict[str: Any]
     """
     r = list(received_data)
@@ -103,24 +105,9 @@ def parse_unit_status(received_data):
     status_mask["local_mode"] = (status_mask_bits & 0x80) != 0
     result["status_mask"] = status_mask
 
-    result["active_program_number"] = read_dword(r)  # TODO result is wrong
-    result["active_block_number"] = read_word(r)  # TODO result is wrong
-    result["program_error_number"] = read_word(r)
-    result["errored_block_number"] = read_word(r)
-    result["tool_number"] = read_word(r)
-
-    # 938914 segment 153: the axis bit (0 = X, 1 = Y, 2 = Z) is set in the high byte for a
-    # positive direction and in the low byte for a negative one -> +1 / -1 / 0 per axis
-    tool_direction = dict()
-    tool_direction_bits = read_word(r)
-    for axis, bit in (("x", 0), ("y", 1), ("z", 2)):
-        positive = (tool_direction_bits >> (8 + bit)) & 1
-        negative = (tool_direction_bits >> bit) & 1
-        tool_direction[axis] = positive - negative
-    result["tool_direction"] = tool_direction
-
-    result["tool_corrector"] = read_word(r)
-
+    # 22 bytes of segment 153. Field ORDER per 938846 §15.2 (G functions first), field SIZES per
+    # 938914 §4.1.3: the two manuals disagree on the order and the machine follows 938846 - read
+    # that way the idle NC reports G01 G17 G90 G40 G54 G94 G97, %9001 and tool axis Z- (2026-09-22).
     list_of_g_functions = dict()
     list_of_g_functions_bits = read_dword(r)
     # bit numbers per 938914 segment 153; bits 5, 22, 26 and 29 are not assigned
@@ -160,6 +147,27 @@ def parse_unit_status(received_data):
         list_of_g_functions[key] = (list_of_g_functions_bits & (1 << value)) >> value
     result["list_of_g_functions"] = list_of_g_functions
 
+    # sent as programme number x 10 + index: 90010 for %9001 (inferred from two captures)
+    active_program = read_dword(r)
+    result["active_program_number"] = active_program // 10
+    result["active_program_index"] = active_program % 10
+    result["active_block_number"] = read_word(r)
+    result["program_error_number"] = read_word(r)
+    result["errored_block_number"] = read_word(r)
+    result["tool_number"] = read_word(r)
+
+    # 938914 segment 153: the axis bit (0 = X, 1 = Y, 2 = Z) is set in the high byte for a
+    # positive direction and in the low byte for a negative one -> +1 / -1 / 0 per axis
+    tool_direction = dict()
+    tool_direction_bits = read_word(r)
+    for axis, bit in (("x", 0), ("y", 1), ("z", 2)):
+        positive = (tool_direction_bits >> (8 + bit)) & 1
+        negative = (tool_direction_bits >> bit) & 1
+        tool_direction[axis] = positive - negative
+    result["tool_direction"] = tool_direction
+
+    result["tool_corrector"] = read_word(r)
+
     list_of_processes_remaining = dict()
     list_of_processes_remaining_bits = read_word(r)
     processes_remaining = {
@@ -181,11 +189,30 @@ def parse_unit_status(received_data):
         list_of_processes_remaining[key] = (list_of_processes_remaining_bits & (1 << value)) >> value
     result["list_of_processes_remaining"] = list_of_processes_remaining
 
-    result["operator_panel_status"] = read_byte(r)
-    result["nc_status"] = read_byte(r)
-    result["nc_mode"] = Mode(read_byte(r))
-    result["machine_mode"] = read_byte(r)
-    result["current_program_number"] = read_word(r)
+    # 938914 §4.4 names the next bytes by their ladder images; bit meanings from 938846 §3.8.1
+    operator_panel_status_bits = read_byte(r)  # %R3.B
+    result["operator_panel_status"] = {
+        "cnc_reset_in_progress": (operator_panel_status_bits & 0x01) != 0,  # E_RAZ
+        "cycle_stop": (operator_panel_status_bits & 0x02) != 0,  # E_ARUS
+        "cycle_in_progress": (operator_panel_status_bits & 0x04) != 0,  # E_CYCLE
+        "axis_recall": (operator_panel_status_bits & 0x08) != 0,  # E_RAX
+        "emergency_retract": (operator_panel_status_bits & 0x10) != 0,  # E_DGURG
+        "cnc_fault": (operator_panel_status_bits & 0x40) != 0,  # E_DEFCN
+        "program_stop": (operator_panel_status_bits & 0x80) != 0,  # E_OPER (M00 / M01)
+        "byte": operator_panel_status_bits,
+    }
+    nc_status_bits = read_byte(r)  # %R5.B
+    result["nc_status"] = {
+        "cnc_ready": (nc_status_bits & 0x01) != 0,  # E_CNPRET
+        "active_program": (nc_status_bits & 0x02) != 0,  # E_PROG: a part programme is executing
+        "drip_feed_ready": (nc_status_bits & 0x20) != 0,  # E_PPP
+        "transparent_mode": (nc_status_bits & 0x80) != 0,  # E_TRANSP
+        "byte": nc_status_bits,
+    }
+    result["nc_mode"] = Mode(read_byte(r))  # %R16.B
+    # 938914 calls this byte "machine mode"; its ladder image %R18.B is ERRMACH, the machine error number
+    result["machine_error_number"] = read_byte(r)
+    result["current_program_number"] = read_word(r)  # %R1A.W PROGCOUR
     plc_status = read_byte(r)
     if plc_status == 0:
         result["plc_status"] = "no application"
@@ -196,7 +223,8 @@ def parse_unit_status(received_data):
     elif plc_status == 3:
         result["plc_status"] = "faulty"
 
-    result["plc_memory_field"] = read_bytes(r, 16)
+    # 938914 §4.4: 16 bytes of the PLC memory field the ladder designates; this machine sends 19
+    result["plc_memory_field"] = list(r)
     return result
 
 
