@@ -46,3 +46,12 @@ class UnexpectedObjectTypeResponse(UnexpectedUniteResponse):
 class OperationInProgrammeArea(UnitelwayError):
     def __init__(self):
         super().__init__("Request rejected: operation in the programme area")
+
+
+class NoPollingWindow(UnitelwayError):
+    def __init__(self, address, timeout):
+        super().__init__(
+            f"The master never polled link address 0x{address:02X} within {timeout} s. "
+            "Check the adapter IP/port and that the NUM is powered on; run example/listen.py "
+            "to see which link addresses the master actually polls"
+        )

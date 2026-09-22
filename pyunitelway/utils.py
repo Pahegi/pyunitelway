@@ -4,7 +4,7 @@
 import time
 
 from .constants import *
-from .errors import MalformedUnitelwayResponse
+from .errors import MalformedUnitelwayResponse, UnexpectedAdditionalAwnserCode, UnexpectedUniteResponse, UniteRequestFailed
 
 
 def wait_ms(delay):
@@ -91,6 +91,31 @@ def is_valid_response_code(query_code, resp_code):
     :rtype: bool
     """
     return resp_code == 0xFD or resp_code == get_response_code(query_code)
+
+
+def check_specific_answer(response, additional_request, also_accept=()):
+    """Validate the answer of a NUM specific request (938914 §3.6).
+
+    These requests all use request code ``H'F5'`` and answer with ``H'F5'`` followed by
+    an *additional answer code* that identifies the request (``ADDITIONAL_ANSWER_CODES``).
+    An additional code of ``H'FD'`` is the negative report (938914 §4.17).
+
+    :param list[int] response: UNI-TE answer bytes, starting at the answer code
+    :param int additional_request: Additional request code that was sent (e.g. ``READ_MEMORY_FREE``)
+    :param tuple[int] also_accept: Further additional answer codes to accept (manual contradictions)
+
+    :raises UnexpectedUniteResponse: The answer code is not ``H'F5'``
+    :raises UniteRequestFailed: Additional answer code ``H'FD'``
+    :raises UnexpectedAdditionalAwnserCode: The additional answer code belongs to another request
+    """
+    if response[0] != SPECIFIC_REQUEST:
+        raise UnexpectedUniteResponse(SPECIFIC_REQUEST, response[0])
+    expected = ADDITIONAL_ANSWER_CODES[additional_request]
+    got = response[1]
+    if got == 0xFD:
+        raise UniteRequestFailed()
+    if got != expected and got not in also_accept:
+        raise UnexpectedAdditionalAwnserCode(expected, got)
 
 
 def sublist_in_list(list, sublist):

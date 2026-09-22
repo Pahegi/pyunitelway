@@ -9,10 +9,10 @@ import time
 from pyunitelway.constants import *
 from pyunitelway.conversion import unwrap_unite_response
 from pyunitelway.unite_responses import parse_mirror_result, parse_write_result, parse_unit_identification, parse_unit_status, parse_available_bytes_in_ram, parse_unit_fault_history, parse_stations_managed_by_master, parse_ladder_variable, \
-    parse_ladder_read_response
-from pyunitelway.errors import UnexpectedUniteResponse
+    parse_ladder_read_response, parse_shutdown_result
+from pyunitelway.errors import UnexpectedUniteResponse, NoPollingWindow
 from pyunitelway.num_constants import ladder_size
-from pyunitelway.utils import compute_bcc, duplicate_dle, format_bytearray, format_hex_list, get_response_code, is_valid_response_code, sublist_in_list, delete_dle, read_byte, read_int
+from pyunitelway.utils import compute_bcc, duplicate_dle, format_bytearray, format_hex_list, get_response_code, is_valid_response_code, sublist_in_list, delete_dle, read_byte, read_int, check_specific_answer
 
 
 class UnitelwayClient:
@@ -346,32 +346,47 @@ class UnitelwayClient:
         # self.disconnect_socket(debug=debug)
         return unwrap_unite_response(r)
 
-    def is_my_turn_to_talk(self, address, debug=0):
-        """Allows slave to give permission to the master to communicate
+    def is_my_turn_to_talk(self, address, debug=0, timeout=POLLING_TIMEOUT_SEC):
+        """Block until the master polls our link address (``<DLE><ENQ><address>``, 35000789 §3.6).
 
-        :param address[int] : slave address
+        :param int address: Slave link address
         :param int debug: :doc:`Debug mode </debug_levels>`
+        :param float timeout: Seconds to wait for a polling window before giving up
 
-        :returns: Boolean. Slave authorized or not to communicate to master
+        :returns: ``True`` once the polling window has arrived
+        :rtype: bool
 
-        :raises BadUnitelwayChecksum: Received bad UNI-TELWAY checksum
+        :raises NoPollingWindow: No poll for ``address`` within ``timeout`` seconds
+        :raises ConnectionError: The adapter closed the connection
         """
         print("client.py - is_my_turn_to_talk func: " + "Waiting for sending window", flush=True)
         buf = []
         is_in = False
+        start = time.time()
 
-        while True:
-            r = self.socket.recv(3)
-            if debug >= 1:
-                print("recv =>", format_hex_list(r))
+        self.socket.settimeout(timeout)
+        try:
+            while True:
+                try:
+                    r = self.socket.recv(3)
+                except socket.timeout:
+                    raise NoPollingWindow(address, timeout)
+                if not r:
+                    raise ConnectionError("Adapter closed the connection while waiting for a polling window")
+                if debug >= 1:
+                    print("recv =>", format_hex_list(r))
 
-            buf.extend(b for b in r)
+                buf.extend(b for b in r)
 
-            res = sublist_in_list(buf, [DLE, ENQ, address])
-            is_in = res[0]
+                res = sublist_in_list(buf, [DLE, ENQ, address])
+                is_in = res[0]
 
-            if is_in:
-                break
+                if is_in:
+                    break
+                if time.time() - start >= timeout:
+                    raise NoPollingWindow(address, timeout)
+        finally:
+            self.socket.settimeout(None)
         if debug >= 2: print("client.py - is_my_turn_to_talk func: " + "Got sending window", flush=True)
         return is_in
 
@@ -745,12 +760,12 @@ class UnitelwayClient:
         :raises UnexpectedAdditionalAwnserCode: Unexpected additional answer code
         """
         print("client.py - get_available_bytes_in_ram func: " + "Getting available bytes in RAM", flush=True)
-        unite_query = [READ_MEMORY_FREE, self.category_code, 0x47]
+        unite_query = [SPECIFIC_REQUEST, self.category_code, READ_MEMORY_FREE]
         slave_address = self._unitelway_start[2]
         r = self.run_unite(slave_address, unite_query, text="GET_AVAILABLE_BYTES_IN_RAM", debug=debug)
 
-        if not is_valid_response_code(READ_MEMORY_FREE, r[0]):
-            raise UnexpectedUniteResponse(get_response_code(READ_MEMORY_FREE), r[0])
+        # 938914 §4.15: answer H'F5' / H'77' / status / long word
+        check_specific_answer(r, READ_MEMORY_FREE)
 
         return parse_available_bytes_in_ram(r)
 
@@ -779,21 +794,23 @@ class UnitelwayClient:
             raise ValueError("The message is too long. It must be 96 characters maximum.")
         num_lines = len(message) / 32
 
-        unite_query = [WRITE_MESSAGE, self.category_code, 0x4B, 0x00, num_lines]
+        # TODO A8: num_lines is a float and the data is not padded to 32 bytes per line (938914 §4.17)
+        unite_query = [SPECIFIC_REQUEST, self.category_code, WRITE_MESSAGE, 0x00, num_lines]
         unite_query.extend([ord(c) for c in message])
         slave_address = self._unitelway_start[2]
         r = self.run_unite(slave_address, unite_query, text="SEND_MESSAGE_BY_SUPERVISOR", debug=debug)
 
-        if not is_valid_response_code(WRITE_MESSAGE, r[:1]):
-            raise UnexpectedUniteResponse(get_response_code(WRITE_MESSAGE), r[0])
+        # 938914 §4.17 body says the positive additional answer code is H'FE', the §3.6 table H'7B'
+        check_specific_answer(r, WRITE_MESSAGE, also_accept=(0xFE,))
 
         return True
 
     def shutdown(self, debug=0):
         # TODO untested
-        """Shutdown the PLC.
+        """Shut down the PCNC PC module (938928 §10.4.10).
 
-        This request sends a ``Shutdown`` request and returns the response.
+        This is a PCNC-server request: it runs an executable that shuts down the PC module.
+        Whether the NUM 1060 UC SII answers it at all is unverified.
 
         :param int debug: :doc:`Debug mode </debug_levels>`
         :returns: Shutdown success
@@ -802,10 +819,11 @@ class UnitelwayClient:
         :raises UniteRequestFailed: Received ``0xFD``
         """
         print("client.py - shutdown func: " + "Shutting down the PLC", flush=True)
-        unite_query = [SHUTDOWN, self.category_code, 0x66, 0x00]
+        unite_query = [SPECIFIC_REQUEST, self.category_code, SHUTDOWN, 0x00]
         slave_address = self._unitelway_start[2]
         r = self.run_unite(slave_address, unite_query, text="SHUTDOWN", debug=debug)
 
-        # TODO check multiple response bits, not just one
-        if not is_valid_response_code(SHUTDOWN, r[0]):
-            raise UnexpectedUniteResponse(get_response_code(SHUTDOWN), r[0])
+        # 938928 §10.4.10: answer H'F5' / H'96' / status (H'00' done, H'1C' refused)
+        check_specific_answer(r, SHUTDOWN)
+
+        return parse_shutdown_result(r)

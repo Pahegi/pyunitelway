@@ -57,11 +57,12 @@ def parse_unit_identification(received_data):
 
 
 def parse_unit_status(received_data):
-    """Parse the ``Unit Status Data`` request.
+    """Parse the ``Unit Status Data`` answer (938914 §4.4; segment 153 for the 22 programme-status bytes).
 
     :param list[int] received_data: Received data in the response
 
-    :returns: Unit status dict
+    :returns: Unit status dict. ``tool_direction`` holds ``+1`` / ``-1`` / ``0`` per axis,
+        ``list_of_g_functions`` one ``0``/``1`` per G function.
     :rtype: dict[str: Any]
     """
     r = list(received_data)
@@ -100,39 +101,43 @@ def parse_unit_status(received_data):
     result["errored_block_number"] = read_word(r)
     result["tool_number"] = read_word(r)
 
+    # 938914 segment 153: the axis bit (0 = X, 1 = Y, 2 = Z) is set in the high byte for a
+    # positive direction and in the low byte for a negative one -> +1 / -1 / 0 per axis
     tool_direction = dict()
     tool_direction_bits = read_word(r)
-    tool_direction["x"] = tool_direction_bits & 0x01
-    tool_direction["y"] = tool_direction_bits & 0x02
-    tool_direction["z"] = tool_direction_bits & 0x04
+    for axis, bit in (("x", 0), ("y", 1), ("z", 2)):
+        positive = (tool_direction_bits >> (8 + bit)) & 1
+        negative = (tool_direction_bits >> bit) & 1
+        tool_direction[axis] = positive - negative
     result["tool_direction"] = tool_direction
 
     result["tool_corrector"] = read_word(r)
 
     list_of_g_functions = dict()
     list_of_g_functions_bits = read_dword(r)
+    # bit numbers per 938914 segment 153; bits 5, 22, 26 and 29 are not assigned
     g_functions = {
         "G00": 0,  # Linearinterpolation im Eilang
         "G01": 1,  # Linearinterpolation mit programmiertem Vorschub
         "G02": 2,  # Kreisinterpolation im Uhrzeigersinn mit programmiertem Vorschub
         "G03": 3,  # Kreisinterpolation gegen den Uhrzeigersinn mit programmiertem Vorschub
         "G04": 4,  # Programmierte Verweilzeit
-        "G38": 5,  # ?
-        "G09": 6,  # Genauhalt bei Satzende vor Übergang zum nächsten Satz
-        "G17": 7,  # Wahl der Arbeitsebene XY
-        "G19": 8,  # Wahl der Arbeitsebene ZX
-        "G18": 9,  # Wahl der Arbeitsebene YZ
-        "G90": 10,  # Absolutwertprogrammierung bezogen auf Werkstücknullpunkt
-        "G91": 11,  # Kettenmaßprogrammierung bezogen auf den Startpunkt des Satzes
-        "G70": 12,  # Programmierung in Zoll
-        "G52": 13,  # Absolutwertprogrammierung der Verfahrwege bezogen auf den Maschinennullpunkt
-        "G22": 14,  # ?
-        "G40": 15,  # Aufhebung der Radiuskorrektur
-        "G41": 16,  # Radiuskorrektur links von der Kontur
-        "G42": 17,  # Radiuskorrektur rechts von der Kontur
-        "G53": 18,  # Aufhebung der Nullpunktverschiebung NP-1 und NPV-1
-        "G54": 19,  # Übernahme der Nullpunktverschiebung NP-1 und NPV-1
-        "G29": 20,  # 3D-Werkzeugkorrektur (3 Achsen oder 5 Achsen)
+        "G38": 6,  # ?
+        "G09": 7,  # Genauhalt bei Satzende vor Übergang zum nächsten Satz
+        "G17": 8,  # Wahl der Arbeitsebene XY
+        "G19": 9,  # Wahl der Arbeitsebene YZ
+        "G18": 10,  # Wahl der Arbeitsebene ZX
+        "G90": 11,  # Absolutwertprogrammierung bezogen auf Werkstücknullpunkt
+        "G91": 12,  # Kettenmaßprogrammierung bezogen auf den Startpunkt des Satzes
+        "G70": 13,  # Programmierung in Zoll
+        "G52": 14,  # Absolutwertprogrammierung der Verfahrwege bezogen auf den Maschinennullpunkt
+        "G22": 15,  # ?
+        "G40": 16,  # Aufhebung der Radiuskorrektur
+        "G41": 17,  # Radiuskorrektur links von der Kontur
+        "G42": 18,  # Radiuskorrektur rechts von der Kontur
+        "G53": 19,  # Aufhebung der Nullpunktverschiebung NP-1 und NPV-1
+        "G54": 20,  # Übernahme der Nullpunktverschiebung NP-1 und NPV-1
+        "G29": 21,  # 3D-Werkzeugkorrektur (3 Achsen oder 5 Achsen)
         "G93": 23,  # Vorschub in Vorschub/Weg
         "G94": 24,  # Vorschub in Millimeter, Zoll oder Grad/Minute
         "G95": 25,  # Vorschub in Millimeter oder Zoll/Umdrehung
@@ -301,6 +306,20 @@ def parse_write_result(response):
     return response[0] == 0xFE
 
 
+def parse_shutdown_result(response):
+    """Parse the PCNC ``SHUTDOWN`` answer (938928 §10.4.10).
+
+    Answer layout: answer code ``H'F5'`` / additional answer code ``H'96'`` / status
+    (``H'00'`` shutdown started, ``H'1C'`` refused).
+
+    :param list[int] response: Response **with** UNI-TE response code
+
+    :returns: ``True`` if the status byte is ``H'00'``
+    :rtype: bool
+    """
+    return response[2] == 0x00
+
+
 def parse_unit_fault_history(response):
     """Parse get_unit_fault_history response
 
@@ -329,6 +348,7 @@ def parse_stations_managed_by_master(response):
     resp = list(response)
     r = resp[1:]
     num_stations = read_byte(r)
-    # TODO create list of bits
-    return NotImplementedError(num_stations)
+    # 938914 §4.7: 1 bit per station, rank = link address -> station i is bit i % 8 of byte i // 8
+    status = [(r[i // 8] >> (i % 8)) & 1 == 1 for i in range(num_stations)]
+    return num_stations, status
 

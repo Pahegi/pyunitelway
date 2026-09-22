@@ -9,6 +9,7 @@ TRET_MAX = ICT
 TERT_MIN = 150  # TEST
 
 TIMEOUT_SEC = 2  # Time between message sent and received in second
+POLLING_TIMEOUT_SEC = 10  # Max wait for the master's <DLE><ENQ><addr> poll before giving up
 
 # Special chars
 DLE = 0x10
@@ -35,12 +36,38 @@ CLOSE_DOWNLOAD = 0x3C
 OPEN_UPLOAD = 0x3D
 WRITE_UPLOAD = 0x3E
 CLOSE_UPLOAD = 0x3F
+
+# NUM specific requests (938914 §3.6; 938928 §10.4 for the two PCNC ones).
+# They all share request code H'F5' and are told apart by an *additional request code*
+# that follows the category code. The answer is H'F5' followed by the matching
+# *additional answer code* (= additional request code + 0x30), then status/data.
+SPECIFIC_REQUEST = 0xF5
+
+DELETE_FILE = 0x46
+READ_MEMORY_FREE = 0x47
 OPEN_DIRECTORY = 0x48
 DIRECTORY = 0x49
 CLOSE_DIRECTORY = 0x4A
-READ_MEMORY_FREE = 0xF5
-WRITE_MESSAGE = 0xF5
-SHUTDOWN = 0xF5
+WRITE_MESSAGE = 0x4B
+STOP_AUTOMATE = 0x4C
+INIT_AUTOMATE = 0x4D
+RUN_AUTOMATE = 0x4F
+START_APPLI = 0x65  # 938928 §10.4.11, PCNC server only
+SHUTDOWN = 0x66  # 938928 §10.4.10, PCNC server only
+
+ADDITIONAL_ANSWER_CODES = {
+    DELETE_FILE: 0x76,
+    READ_MEMORY_FREE: 0x77,
+    OPEN_DIRECTORY: 0x78,
+    DIRECTORY: 0x79,
+    CLOSE_DIRECTORY: 0x7A,
+    WRITE_MESSAGE: 0x7B,  # §3.6 table; the §4.17 body says H'FE' - client.write_message accepts both
+    STOP_AUTOMATE: 0x7C,
+    INIT_AUTOMATE: 0x7D,
+    RUN_AUTOMATE: 0x7F,
+    START_APPLI: 0x95,
+    SHUTDOWN: 0x96,
+}
 
 # Response codes
 RESPONSE_CODES = {
@@ -58,12 +85,7 @@ RESPONSE_CODES = {
     OPEN_UPLOAD: 0x6D,
     WRITE_UPLOAD: 0x6E,
     CLOSE_UPLOAD: 0x6F,
-    OPEN_DIRECTORY: 0x78,
-    DIRECTORY: 0x79,
-    CLOSE_DIRECTORY: 0x7A,
-    READ_MEMORY_FREE: 0xF5,
-    WRITE_MESSAGE: 0xFE,
-
+    SPECIFIC_REQUEST: 0xF5,  # then check ADDITIONAL_ANSWER_CODES (utils.check_specific_answer)
 }
 
 # Ladder adresses
