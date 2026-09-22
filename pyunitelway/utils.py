@@ -4,7 +4,7 @@
 import time
 
 from .constants import *
-from .num_constants import ladder_specific
+from .num_constants import Mode, ladder_specific
 from .errors import MalformedUnitelwayResponse, UnexpectedAdditionalAwnserCode, UnexpectedUniteResponse, UniteRequestFailed
 
 
@@ -91,6 +91,29 @@ def ladder_specific_byte(size):
     :rtype: int
     """
     return int(size) if size.isdigit() else ladder_specific[size]
+
+
+def encode_object(spec, value):
+    """Encode a value for Write-Object per its ``ObjectSpec`` (little-endian, signed).
+
+    :param ObjectSpec spec: Object layout
+    :param value: ``Mode``, ``int``, list of long words, or raw bytes - per ``spec.kind``
+    :rtype: list[int]
+    :raises ValueError: Wrong number of long words / bytes
+    """
+    if spec.kind == "mode":
+        return list(int(Mode(value)).to_bytes(spec.size, "little"))
+    if spec.kind == "int":
+        return list(int(value).to_bytes(spec.size, "little", signed=True))
+    if spec.kind == "longs":
+        values = list(value)
+        if len(values) * 4 != spec.size:
+            raise ValueError(f"expected {spec.size // 4} long words, got {len(values)}")
+        return [b for v in values for b in int(v).to_bytes(4, "little", signed=True)]
+    data = list(value)
+    if len(data) != spec.size:
+        raise ValueError(f"expected {spec.size} bytes, got {len(data)}")
+    return data
 
 
 def check_specific_answer(response, additional_request, also_accept=()):

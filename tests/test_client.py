@@ -22,10 +22,12 @@ from pyunitelway.errors import (
     NoPollingWindow,
     NoUniteResponse,
     UnexpectedAdditionalAwnserCode,
+    UnexpectedDataLength,
     UnexpectedUniteResponse,
     UniteRequestFailed,
 )
 from pyunitelway.conversion import unwrap_unite_response
+from pyunitelway.num_constants import Mode, Object
 from pyunitelway.utils import check_specific_answer, is_valid_response_code
 
 import test_hardware_vectors as hv
@@ -243,3 +245,35 @@ class TestReadLadder:
         with pytest.raises(NotImplementedError):
             c.write_ladder("%W3.2", 1)
         assert sent == []
+
+
+class TestObjects:
+    def test_read_mode_decodes_segment_180(self):
+        c = client_answering(unwrap_unite_response(hv.READ_MODE))  # 66 00 00 00
+        assert c.read_mode() is Mode.AUTO
+
+    def test_write_mode_builds_the_frame_captured_in_2025(self):
+        sent = []
+        c = client_answering([0xFE], sent)
+        assert c.write_mode(Mode.MDI) is True
+        assert sent == [[0x37, 0x00, 0xB4, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00]]
+
+    def test_read_only_object_refuses_to_write(self):
+        sent = []
+        c = client_answering([0xFE], sent)
+        with pytest.raises(ValueError):
+            c.write_object(Object.AXIS_MEASUREMENT, [0] * 9)
+        assert sent == []
+
+    def test_read_object_checks_the_size(self):
+        c = client_answering([0x66, 0x00, 0x00])  # one byte for a one-word object
+        with pytest.raises(UnexpectedDataLength):
+            c.read_object(Object.MODE_SELECTION)
+
+    def test_longs_and_int(self):
+        c = client_answering([0x66, 0x00] + list((-5).to_bytes(4, "little", signed=True)) * 9)
+        assert c.read_object(Object.AXIS_MEASUREMENT) == [-5] * 9
+        sent = []
+        c = client_answering([0xFE], sent)
+        c.write_object(Object.CURRENT_PROGRAMME_NUMBER, 9001)
+        assert sent[0][-2:] == [0x29, 0x23]

@@ -366,3 +366,18 @@ def parse_stations_managed_by_master(response):
     status = [(r[i // 8] >> (7 - i % 8)) & 1 == 1 for i in range(num_stations)]
     return num_stations, status
 
+
+def decode_object(spec, data):
+    """Decode NC object bytes per its ``ObjectSpec`` (938914 §2: little-endian, signed).
+
+    :param ObjectSpec spec: Object layout
+    :param list[int] data: Object bytes
+    :returns: ``Mode``, signed ``int``, ``list[int]`` of signed long words, or the raw bytes
+    """
+    if spec.kind == "mode":
+        return Mode(int.from_bytes(bytes(data), "little"))
+    if spec.kind == "int":
+        return int.from_bytes(bytes(data), "little", signed=True)
+    if spec.kind == "longs":
+        return [int.from_bytes(bytes(data[i:i + 4]), "little", signed=True) for i in range(0, len(data), 4)]
+    return list(data)

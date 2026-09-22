@@ -1,4 +1,5 @@
 from enum import IntEnum
+from typing import NamedTuple
 
 symbol_bounds = {
     "%M": 0x77FF,
@@ -82,3 +83,43 @@ class Object(IntEnum):
     CURRENT_PROGRAMME_NUMBER = 0xB5
     DATA_TRANSMITTED_TO_PROGRAMME_BEING_EXECUTED = 0xE0
     ACKNOWLEDGEMENT_OF_BLOCKING_MESSAGE = 0xE2  #$11 or $22
+
+
+class ObjectSpec(NamedTuple):
+    size: int  # bytes per object
+    writable: bool  # "accessible for write", 938914 §4.1.3
+    kind: str  # int (signed) | mode | longs (list of signed long words) | raw
+
+
+# 938914 §4.1.3
+OBJECT_SPEC = {
+    Object.AXIS_POSITION_REFERENCE: ObjectSpec(36, False, "longs"),
+    Object.AXIS_MEASUREMENT: ObjectSpec(36, False, "longs"),
+    Object.AXIS_DAT1_VALUES: ObjectSpec(36, True, "longs"),
+    Object.AXIS_DAT2_VALUES: ObjectSpec(36, True, "longs"),
+    Object.AXIS_DAT3_VALUES: ObjectSpec(36, True, "longs"),
+    Object.MINIMUM_DYNAMIC_AXIS_TRAVEL: ObjectSpec(36, True, "longs"),
+    Object.MAXIMUM_DYNAMIC_AXIS_TRAVEL: ObjectSpec(36, True, "longs"),
+    Object.INCLINED_AXIS_ANGULAR_VALUE: ObjectSpec(4, True, "int"),
+    Object.MACHINE_ZERO_POINT: ObjectSpec(4, True, "int"),
+    Object.MINIMUM_STATIC_TRAVEL: ObjectSpec(4, True, "int"),
+    Object.MAXIMUM_STATIC_TRAVEL: ObjectSpec(4, True, "int"),
+    Object.CURRENT_CORRECTIONS_SLAVE_AXIS: ObjectSpec(4, False, "int"),
+    Object.AXIS_POSITION_REFERENCE_AXISWISE: ObjectSpec(4, False, "int"),
+    Object.AXIS_MEASUREMENT_AXISWISE: ObjectSpec(4, False, "int"),
+    Object.DRIVEN_AXES: ObjectSpec(4, False, "int"),
+    Object.MEASURED_SPINDLE_SPEED_SETTING: ObjectSpec(4, False, "int"),
+    Object.MEASURED_SPINDLE_REFERENCE_POSITION: ObjectSpec(4, False, "int"),
+    Object.TOOL_CORRECTIONS: ObjectSpec(28, False, "longs"),
+    Object.H_VARIABLE_DYNAMIC_CORRECTORS: ObjectSpec(4, True, "int"),  # first object at address 1
+    Object.INTERPOLATION_STATUS: ObjectSpec(16, False, "longs"),
+    Object.HOMING_NOT_DONE_ON_AXES: ObjectSpec(4, True, "int"),
+    Object.LOCAL_DATA_PARAMETERS_E: ObjectSpec(4, True, "int"),  # E800xx
+    Object.MASTER_AXIS_REFERENCE_POSITION_INTERAXIS_CALIBRATION: ObjectSpec(4, True, "int"),
+    Object.SLAVE_AXIS_CORRECTION_INTERAXIS_CALIBRATION: ObjectSpec(4, True, "int"),
+    Object.PROGRAMME_STATUS: ObjectSpec(22, False, "raw"),
+    Object.BLOCK_END_DIMENSIONS: ObjectSpec(44, False, "longs"),
+    Object.MODE_SELECTION: ObjectSpec(2, True, "mode"),
+    Object.CURRENT_PROGRAMME_NUMBER: ObjectSpec(2, True, "int"),
+    Object.DATA_TRANSMITTED_TO_PROGRAMME_BEING_EXECUTED: ObjectSpec(4, True, "int"),
+}

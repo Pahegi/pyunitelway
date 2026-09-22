@@ -9,8 +9,10 @@ import time
 
 from pyunitelway.constants import *
 from pyunitelway.conversion import unwrap_unite_response
-from pyunitelway.errors import NoPollingWindow, NoUniteResponse, UnexpectedUniteResponse
+from pyunitelway.errors import NoPollingWindow, NoUniteResponse, UnexpectedDataLength, UnexpectedUniteResponse
+from pyunitelway.num_constants import OBJECT_SPEC, Mode, Object
 from pyunitelway.unite_responses import (
+    decode_object,
     parse_available_bytes_in_ram,
     parse_ladder_read_response,
     parse_ladder_variable,
@@ -26,6 +28,7 @@ from pyunitelway.utils import (
     check_specific_answer,
     compute_bcc,
     duplicate_dle,
+    encode_object,
     format_hex_list,
     get_response_code,
     is_valid_response_code,
@@ -302,6 +305,50 @@ class UnitelwayClient:
         if not is_valid_response_code(WRITE_OBJECTS, resp[0]):
             raise UnexpectedUniteResponse(get_response_code(WRITE_OBJECTS), resp[0])
         return parse_write_result(resp)
+
+    def read_object(self, obj, address=0):
+        """Read one NC object and decode it per ``OBJECT_SPEC`` (938914 §4.1.3).
+
+        :param Object obj: Object family
+        :param int address: Object index in the family (axis group, tool, E parameter, ...)
+        :returns: ``Mode``, signed ``int``, ``list[int]`` of signed long words, or the raw bytes
+        :raises UnexpectedDataLength: Answer size differs from the spec
+        """
+        spec = OBJECT_SPEC[obj]
+        resp = self._read_objects(obj, 0, address, 1)
+        data = resp[2:]
+        if len(data) != spec.size:
+            raise UnexpectedDataLength(spec.size, data)
+        return decode_object(spec, data)
+
+    def write_object(self, obj, value, address=0):
+        """Write one NC object. **Live on the machine.**
+
+        :param Object obj: Object family, must be writable per 938914 §4.1.3
+        :param value: ``Mode``, ``int``, list of long words or raw bytes, per the spec
+        :param int address: Object index in the family
+        :returns: ``True`` on the ``0xFE`` answer
+        :raises ValueError: Read-only object or malformed value
+        """
+        spec = OBJECT_SPEC[obj]
+        if not spec.writable:
+            raise ValueError(f"{obj.name} is read-only (938914 §4.1.3)")
+        return self._write_objects(obj, 0, address, 1, encode_object(spec, value))
+
+    def read_mode(self):
+        """Current NC mode, segment 180.
+
+        :rtype: Mode
+        """
+        return self.read_object(Object.MODE_SELECTION)
+
+    def write_mode(self, mode):
+        """Select the NC mode, segment 180. **Live on the machine** - %R16.B is read by 36 PLC networks.
+
+        :param Mode mode: Mode to select
+        :returns: ``True`` on the ``0xFE`` answer
+        """
+        return self.write_object(Object.MODE_SELECTION, Mode(mode))
 
     # ------- ladder variables (938914 §4.1.3.3, 938846 §15) -------
 

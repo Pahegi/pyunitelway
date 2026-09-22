@@ -13,7 +13,6 @@ from datetime import datetime
 from pathlib import Path
 
 from pyunitelway import UnitelwayClient
-from pyunitelway.num_constants import Object, Mode
 
 ADAPTER_IP = "10.1.70.202"
 ADAPTER_PORT = 8234
@@ -58,7 +57,7 @@ def main():
     attempt("unit identification", lambda: client.get_unit_identification())
     attempt("unit status", lambda: client.get_unit_status())
     attempt("available bytes in NC RAM", lambda: client.get_available_bytes_in_ram())
-    attempt("read object: mode", lambda: client._read_objects(Object.MODE_SELECTION, 0x00, 0x00, 0x01))
+    attempt("read_mode", lambda: client.read_mode())
     attempt("stations managed by master", lambda: client.get_stations_managed_by_master())
     attempt("unit fault history", lambda: client.get_unit_fault_history())
 
@@ -78,7 +77,7 @@ def main():
 
     # ---- writes: keep commented out unless you mean it ----
     # client.write_message("Hello World!")  # displays text on the NC (A8: cannot send yet)
-    # client._write_objects(Object.MODE_SELECTION, 0x00, 0x00, 0x01, [Mode.MDI, 0x00])  # sets the mode
+    # client.write_mode(Mode.MDI)  # sets the mode - live, same frame as the 2025 capture below
     # client.write_ladder("%W3.2", 0x01)  # NC start - raises NotImplementedError today
     # client.shutdown()  # PCNC shutdown - untested
 
