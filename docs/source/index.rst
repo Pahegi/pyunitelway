@@ -13,11 +13,13 @@ Status: prototype. Verified on the machine on 2026-09-22 (the frames are regress
 * ``get_unit_status`` - NC/PLC status, programme status (segment 153), mode, programme number
 * ``get_available_bytes_in_ram``
 * ``read_mode`` / ``read_object`` - NC objects (938914 §4.1.3), e.g. the operating mode as ``Mode``
-* ``read_ladder`` - PLC variables ``%M %V %I %Q %R %W %S`` as bit, byte, word or long word
+* ``read_ladder`` - PLC variables ``%M %V %I %Q %R %W %S`` as bit, byte, word or long word (verified on
+  ``%R``, ``%I``, ``%Q``)
 * ``get_stations_managed_by_master``, ``get_unit_fault_history``
 
-Live writes, unit-tested only: ``write_mode`` / ``write_object`` (setting the mode was verified
-earlier), ``_write_objects``. Not implemented: ``write_ladder`` (raises), ``write_message`` (cannot
+Verified live write (2026-09-22): ``write_mode`` - MANUAL and back to AUTO, read back over ``read_mode``
+and ``%R16.B``. ``write_object`` for the other families and ``_write_objects`` are unit-tested only.
+Not implemented: ``write_ladder`` (raises), ``write_message`` (cannot
 send yet), file transfer and directory requests. ``shutdown`` is untested.
 
 .. toctree::
@@ -51,7 +53,10 @@ Quick start
     client.disconnect_socket()
 
 Scripts: ``poetry run listen`` receives only and lists the link addresses the master polls;
-``poetry run test`` runs every read-only request and logs the wire bytes to ``example/logs/``.
+``poetry run test`` runs every read request plus the mode round-trip and logs the wire bytes to
+``example/logs/``; ``poetry run panel`` renders the machine's operator panel (buttons, lamps, key
+switch, potentiometers) from ``%I0100``-``%I0104`` / ``%Q0100``-``%Q0102``, read-only, ``--watch 1``
+to refresh.
 
 Setup
 =====

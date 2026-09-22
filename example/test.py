@@ -1,6 +1,7 @@
-"""Read-only connectivity check against the NUM 1060.
+"""Connectivity check against the NUM 1060.
 
-Every request below is a read. Writes stay commented out; uncomment one deliberately.
+Everything is a read except the mode round-trip (MANUAL, then back to AUTO). Other writes stay
+commented out; uncomment one deliberately.
 
 Console shows INFO (one line per exchange + result); ``example/logs/test-<timestamp>.log`` gets
 DEBUG (every wire byte) so the machine's real answers can become test vectors.
@@ -8,11 +9,13 @@ DEBUG (every wire byte) so the machine's real answers can become test vectors.
 
 import logging
 import sys
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
 
 from pyunitelway import UnitelwayClient
+from pyunitelway.num_constants import Mode
 
 ADAPTER_IP = "10.1.70.202"
 ADAPTER_PORT = 8234
@@ -75,9 +78,16 @@ def main():
         attempt(f"read_ladder {var} ({what})", lambda v=var: client.read_ladder(v))
     attempt("_read_objects %R1A.W x2", lambda: client._read_objects(0xA4, 65, 0x1A, 2))  # QUANTITY probe (B1)
 
-    # ---- writes: keep commented out unless you mean it ----
+    # ---- mode round-trip: live write, segment 180 (938914 §4.1.3); the PLC never writes %W14.B ----
+    attempt("read_mode before", lambda: client.read_mode())
+    for mode in (Mode.MANUAL, Mode.AUTO):
+        attempt(f"write_mode {mode.name}", lambda m=mode: client.write_mode(m))
+        time.sleep(0.5)
+        attempt(f"read_mode after {mode.name}", lambda: client.read_mode())
+        attempt(f"read_ladder %R16.B after {mode.name}", lambda: client.read_ladder("%R16.B"))
+
+    # ---- other writes: keep commented out unless you mean it ----
     # client.write_message("Hello World!")  # displays text on the NC (A8: cannot send yet)
-    # client.write_mode(Mode.MDI)  # sets the mode - live, same frame as the 2025 capture below
     # client.write_ladder("%W3.2", 0x01)  # NC start - raises NotImplementedError today
     # client.shutdown()  # PCNC shutdown - untested
 

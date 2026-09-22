@@ -2,11 +2,14 @@
 
 Captured 2026-09-22 with ``example/test.py`` at debug=2 (``example/logs/test-20260922-202236.log``):
 USR-TCP232-306 at 10.1.70.202:8234, this client at link address 0x01 (the only address the master
-polls), NC idle in AUTO, programme %9001 selected, PLC running. Each vector is the complete
+polls), NC idle in AUTO, programme %9001 selected, PLC running. The mode round-trip vectors are from
+``example/logs/test-20260922-220419.log`` (write MANUAL, read back, write AUTO); the panel bytes are
+from ``example/logs/panel-20260922-221429.log`` (``poetry run panel``). Each vector is the complete
 UNI-TELWAY frame as received, so these pin the whole unwrap + parse path against what the machine
 actually sends - not against the manual.
 """
 
+from pyunitelway.client import UnitelwayClient
 from pyunitelway.conversion import unwrap_unite_response
 from pyunitelway.num_constants import Mode
 from pyunitelway.unite_responses import (
@@ -41,6 +44,17 @@ LADDER_R16_B = frame("10 02 01 09 20 00 fe 00 00 00 66 40 00 e0")  # %R16.B MODC
 LADDER_R1A_W = frame("10 02 01 0a 20 00 fe 00 00 00 66 41 29 23 2e")  # %R1A.W PROGCOUR = 9001
 LADDER_R6_L = frame("10 02 01 0c 20 00 fe 00 00 00 66 42 00 00 00 00 e5")  # %R6.L AXMVT = 0
 LADDER_R1A_W_X2 = frame("10 02 01 0c 20 00 fe 00 00 00 66 41 29 23 00 00 30")  # QUANTITY 2
+
+# mode round-trip 22:04: write_mode(MANUAL) as sent (length 16 = DLE, doubled), its answer, the read-backs
+WRITE_MODE_MANUAL_TX = frame("10 02 01 10 10 20 00 fe 00 00 00 37 00 b4 00 00 00 01 00 07 00 44")
+WRITE_MODE_ANSWER = frame("10 02 01 07 20 00 fe 00 00 00 fe 36")  # Write-Object positive answer
+READ_MODE_MANUAL = frame("10 02 01 0a 20 00 fe 00 00 00 66 00 07 00 a8")
+LADDER_R16_B_MANUAL = frame("10 02 01 09 20 00 fe 00 00 00 66 40 07 e7")  # %R16.B MODCOUR = MANUAL
+
+# operator panel 22:14: %I / %Q byte reads (segments 0xA8 / 0xA9, address = rack/card/byte as hex)
+PANEL_I0101_B = frame("10 02 01 09 20 00 fe 00 00 00 66 40 20 00")  # bit 5 = key switch "Freigabe"
+PANEL_Q0100_B = frame("10 02 01 09 20 00 fe 00 00 00 66 40 80 60")  # bit 7 = lamp "Achsenstopp quittiert"
+PANEL_I0123_B = frame("10 02 01 09 20 00 fe 00 00 00 66 40 c5 a5")  # feed potentiometer, 197
 
 
 def test_mirror():
@@ -121,3 +135,27 @@ def test_ladder_quantity_counts_objects():
     # QUANTITY 2 with specific 65 (word) -> 4 data bytes: %R1A.W = 9001, %R1C.W = 0
     unite = unwrap_unite_response(LADDER_R1A_W_X2)
     assert unite == [0x66, 65, 0x29, 0x23, 0x00, 0x00]
+
+
+def test_write_mode_frame_as_sent_and_answered():
+    # 938914 §4.1.2: 37 cat seg spec addr(LE) n(LE) data(LE); 35000789 §3.5: length 0x10 doubled on the wire
+    c = UnitelwayClient()
+    query = [0x37, 0x00, 0xB4, 0x00, 0x00, 0x00, 0x01, 0x00, 0x07, 0x00]
+    assert c._xway_to_unitelway(c._unite_to_xway(query)) == WRITE_MODE_MANUAL_TX
+    assert unwrap_unite_response(WRITE_MODE_ANSWER) == [0xFE]
+
+
+def test_mode_read_back_after_write():
+    unite = unwrap_unite_response(READ_MODE_MANUAL)
+    assert unite == [0x66, 0x00, 0x07, 0x00]
+    assert Mode(int.from_bytes(unite[2:], "little")) is Mode.MANUAL
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_R16_B_MANUAL), "B") == Mode.MANUAL
+
+
+def test_panel_io_bytes():
+    # %I0101.B -> 0x20: the key switch sat in its middle position (%I0101.5, "Freigabe"), so bit n is
+    # value bit n, LSB first - the same layout %R5.B = 1 / %R5.0 = True already implied
+    assert parse_ladder_read_response(unwrap_unite_response(PANEL_I0101_B), "B") == 0x20
+    assert parse_ladder_read_response(unwrap_unite_response(PANEL_Q0100_B), "B") == -128  # .B is signed
+    assert parse_ladder_read_response(unwrap_unite_response(PANEL_Q0100_B), "B") & 0xFF == 0x80
+    assert parse_ladder_read_response(unwrap_unite_response(PANEL_I0123_B), "B") & 0xFF == 197  # pot: unsigned

@@ -8,11 +8,12 @@ Verified on the machine (2026-09-22; the frames are regression vectors in `tests
 * `mirror` - link test
 * `get_unit_identification`, `get_unit_status`, `get_available_bytes_in_ram`
 * `read_mode` / `read_object` - NC objects, e.g. the operating mode as a `Mode` enum
-* `read_ladder` - PLC variables `%M %V %I %Q %R %W %S` as bit, byte, word or long word
+* `read_ladder` - PLC variables `%M %V %I %Q %R %W %S` as bit, byte, word or long word (verified on `%R`, `%I`, `%Q`)
 * `get_stations_managed_by_master`, `get_unit_fault_history`
 
-Live writes, unit-tested only: `write_mode` / `write_object`. Not implemented: `write_ladder`
-(raises), `write_message`, file transfer, directory requests.
+Verified live write: `write_mode` (segment 180, MANUAL and back to AUTO, read back over both
+`read_mode` and `%R16.B`). `write_object` for the other families is unit-tested only. Not implemented:
+`write_ladder` (raises), `write_message`, file transfer, directory requests.
 
 ## Usage
 
@@ -31,7 +32,8 @@ client.disconnect_socket()
 
 ```bash
 poetry run listen        # receive only: which link addresses does the master poll?
-poetry run test          # every read-only request, wire bytes logged to example/logs/
+poetry run test          # every read-only request + the mode round-trip, wire bytes logged to example/logs/
+poetry run panel         # the operator panel (buttons, lamps, key switch, pots) as the PLC sees it; --watch 1
 poetry run pytest        # spec and hardware vectors, no machine needed
 ```
 
