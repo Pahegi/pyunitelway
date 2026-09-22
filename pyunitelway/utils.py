@@ -8,16 +8,6 @@ from .num_constants import Mode, ladder_specific
 from .errors import MalformedUnitelwayResponse, UnexpectedAdditionalAwnserCode, UnexpectedUniteResponse, UniteRequestFailed
 
 
-def wait_ms(delay):
-    """Wait during ``delay`` milliseconds.
-    
-    :param int delay: Delay in ms
-    """
-    start = time.time()
-    now = start
-    while now - start < delay / 1000:
-        now = time.time()
-
 
 def format_bytearray(ba):
     """Format ``bytearray`` bytes in hexadecimal.
@@ -64,7 +54,7 @@ def get_response_code(query_code):
     :rtype: Union[int, list[int]]
     """
     if query_code in RESPONSE_CODES.keys():
-        return RESPONSE_CODES[query_code]  # TODO some requests have same request code but different response code
+        return RESPONSE_CODES[query_code]
 
     return query_code + 0x30
 
@@ -140,39 +130,6 @@ def check_specific_answer(response, additional_request, also_accept=()):
     if got != expected and got not in also_accept:
         raise UnexpectedAdditionalAwnserCode(expected, got)
 
-
-def sublist_in_list(list, sublist):
-    """Check if a list is a sub-sequence of a list.
-    
-    Returns a ``tuple`` with a ``bool`` and an ``int`` : the ``bool`` is ``True`` if all the elements of sublist are in list, in the same order;
-    and the ``int`` is the index of the first element in the sub-list (``-1`` if not found)
-    
-    :param list list: List where to check
-    :param list sublist: Sub-list to search
-
-    :returns: Tuple containing the boolean result and the index
-    :rtype: (bool, int)
-    """
-    i = 0
-    while i < len(list):
-        ie = list[i]
-        if ie == sublist[0]:
-            j = i
-            sub_i = 0
-            while j < len(list) and sub_i < len(sublist):
-
-                if list[j] != sublist[sub_i]:
-                    i = j
-                    break
-                j += 1
-                sub_i += 1
-
-            if sub_i >= len(sublist):
-                return True, i
-
-        i += 1
-
-    return False, -1
 
 
 def split_list_n(list, n):

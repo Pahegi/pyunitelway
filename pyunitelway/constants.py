@@ -1,28 +1,16 @@
-# Wait times (in ms)
-# Took from doc: https://download.schneider-electric.com/files?p_enDocType=User+guide&p_File_Name=35000789_K06_000_00.pdf&p_Doc_Ref=35000789K01000
-
-TBIT = 1 / 9600 * 1000
-ICT = 2000
-TRET_MIN = 10 * TBIT
-TRET_MAX = ICT
-
-TERT_MIN = 150  # TEST
-
-TIMEOUT_SEC = 2  # Time between message sent and received in second
+# Timing (this client's own limits, not the bus timers of 35000789 §3.9)
+TIMEOUT_SEC = 2  # answer wait after a request
 POLLING_TIMEOUT_SEC = 10  # Max wait for the master's <DLE><ENQ><addr> poll before giving up
 MAX_RETRIES = 3  # send + wait attempts per request before NoUniteResponse
 
-# Special chars
+# Control characters (35000789 §3.5)
 DLE = 0x10
 STX = 0x02
 ENQ = 0x05
 ACK = 0x06
 NAK = 0x15
 
-# Category types
-TYPE_TSX = 7
-
-# Request codes
+# UNI-TE request codes (938914 §3.5); file transfer and CLEAR_CPT are not implemented yet
 READ_OBJECTS = 0x36
 WRITE_OBJECTS = 0x37
 UNSOLICITED_DATA = 0xFC

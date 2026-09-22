@@ -309,7 +309,7 @@ def parse_ladder_read_response(response, size):
 
 
 def parse_write_result(response):
-    """Parse ``WRITE_XXX_XXX`` response.
+    """Parse a write answer: ``0xFE`` is the positive report (938914 §4.1.2).
 
     :param list[int] response: Response **with** UNI-TE response code
 
