@@ -1,27 +1,24 @@
-.. pyunitelway documentation master file, created by
-   sphinx-quickstart on Wed Aug  3 14:59:05 2022.
-   You can adapt this file completely to your liking, but it should at least
-   contain the root `toctree` directive.
+pyunitelway for the NUM 1060
+============================
 
-Welcome to pyunitelway's documentation!
-=======================================
+A UNI-TELWAY slave client plus UNI-TE requests for the NUM 1060 Series II CNC of the IMA BIMA
+Quadroform C80/280 at Makerspace Darmstadt. Fork of
+`Purecontrol/pyunitelway <https://github.com/Purecontrol/pyunitelway>`_.
 
-Pyunitelway is a Python library to use the UNI-TELWAY protocol to talk to Schneider PLCs (Programmable Logic Controller).
+Status: prototype. Verified on the machine on 2026-09-22 (the frames are regression vectors in
+``tests/test_hardware_vectors.py``):
 
-This library allows to:
+* ``mirror`` - link test
+* ``get_unit_identification`` - product type, version, name
+* ``get_unit_status`` - NC/PLC status, programme status (segment 153), mode, programme number
+* ``get_available_bytes_in_ram``
+* ``read_mode`` / ``read_object`` - NC objects (938914 §4.1.3), e.g. the operating mode as ``Mode``
+* ``read_ladder`` - PLC variables ``%M %V %I %Q %R %W %S`` as bit, byte, word or long word
+* ``get_stations_managed_by_master``, ``get_unit_fault_history``
 
-* Read a bit in ``%S`` and ``%M``
-* Read a word in ``%SW``, ``%KW`` and ``%MW``
-* Read a double word in ``%KD`` and ``%MD``
-* Read multiple bits in ``%S`` and ``%M``
-* Read multiple words in ``%SW``, ``%KW``, and ``%MW``
-* Read multiple double words in ``%KD`` and ``%MD``
-* Write a bit in ``%S`` and ``%M``
-* Write a word in ``%SW`` and ``%MW``
-* Write a double word in ``%MD``
-* Write multiple words in ``%SW`` and ``%MW``
-* Write multiple double words in ``%MD``
-* Read and write I/O channels (**couldn't test**)
+Live writes, unit-tested only: ``write_mode`` / ``write_object`` (setting the mode was verified
+earlier), ``_write_objects``. Not implemented: ``write_ladder`` (raises), ``write_message`` (cannot
+send yet), file transfer and directory requests. ``shutdown`` is untested.
 
 .. toctree::
    :maxdepth: 2
@@ -30,23 +27,42 @@ This library allows to:
    ./configuration.rst
    ./logging.rst
    ./client.rst
-   ./utils.rst
-   ./conversion.rst
+   ./num_constants.rst
    ./unite_responses.rst
+   ./conversion.rst
+   ./utils.rst
+   ./errors.rst
 
-How to use ?
-============
+Quick start
+===========
 
-This library is designed to use a TCP-RS485 adapter. The adapter is connected to the PC or server which uses this lib via Ethernet or Wi-fi or anything else, and is connected to the PLC via RS-485 on the TER plug.
+::
 
-This library was developed using the USR-TCP232-306 adapter. It was not tested with another kind of connection.
+    import logging
+    from pyunitelway import UnitelwayClient
+
+    logging.basicConfig(level=logging.INFO)
+    client = UnitelwayClient()                 # link address 0x01, the one this master polls
+    client.connect_socket("10.1.70.202", 8234)
+    client.mirror([0x00])                      # True
+    client.read_mode()                         # <Mode.AUTO: 0>
+    client.read_ladder("%R1A.W")               # 9001 - the active programme
+    client.get_unit_status()["nc_status"]      # {'cnc_ready': True, 'active_program': False, ...}
+    client.disconnect_socket()
+
+Scripts: ``poetry run listen`` receives only and lists the link addresses the master polls;
+``poetry run test`` runs every read-only request and logs the wire bytes to ``example/logs/``.
+
+Setup
+=====
+
+PC -> USR-TCP232-306 (TCP server mode) -> RS232 -> NUM 1060 UC SII, port COMM1. NUM parameter P112
+must match the serial settings and the port must be set to *"I-Port is private to PLC"*.
 
 .. figure:: pyunitelway_setup_schema.png
    :align: center
 
-   Tested setup
-
-   See :doc:`Configuration </configuration>` for more details
+   Tested setup - see :doc:`Configuration </configuration>`
 
 Indices and tables
 ==================

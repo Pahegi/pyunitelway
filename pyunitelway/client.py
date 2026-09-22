@@ -93,7 +93,7 @@ class UnitelwayClient:
         return list(self._xway_start) + list(unite_bytes)
 
     def _xway_to_unitelway(self, xway_bytes):
-        """Frame an X-WAY message: header, length (doubled if ``DLE``), data with ``DLE``s doubled, BCC."""
+        """Frame an X-WAY message: header, length (doubled if ``DLE``), data with each ``DLE`` doubled, BCC."""
         frame = list(self._unitelway_start)
         length = len(xway_bytes)
         if length == DLE:

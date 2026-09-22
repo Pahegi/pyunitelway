@@ -3,15 +3,37 @@
 This is a fork of the original [Pyunitelway](https://github.com/Purecontrol/pyunitelway) library adapted to work with the NUM 1060.
 It implements a transport layer unitelway client and multiple application layer UNITE requests.
 
-This library allows to:
+Verified on the machine (2026-09-22; the frames are regression vectors in `tests/test_hardware_vectors.py`):
 
-* Send and validate mirror requests
-* Query unit identification
-* Query unit status data
-* Query available memory
-* Send supervisor messages
-* Read and write objects
-* Read and write ladder variables
+* `mirror` - link test
+* `get_unit_identification`, `get_unit_status`, `get_available_bytes_in_ram`
+* `read_mode` / `read_object` - NC objects, e.g. the operating mode as a `Mode` enum
+* `read_ladder` - PLC variables `%M %V %I %Q %R %W %S` as bit, byte, word or long word
+* `get_stations_managed_by_master`, `get_unit_fault_history`
+
+Live writes, unit-tested only: `write_mode` / `write_object`. Not implemented: `write_ladder`
+(raises), `write_message`, file transfer, directory requests.
+
+## Usage
+
+```python
+import logging
+from pyunitelway import UnitelwayClient
+
+logging.basicConfig(level=logging.INFO)   # one line per exchange; DEBUG shows every wire byte
+client = UnitelwayClient()                 # link address 0x01
+client.connect_socket("10.1.70.202", 8234)
+client.mirror([0x00])                      # True
+client.read_mode()                         # <Mode.AUTO: 0>
+client.read_ladder("%R1A.W")               # 9001 - the active programme
+client.disconnect_socket()
+```
+
+```bash
+poetry run listen        # receive only: which link addresses does the master poll?
+poetry run test          # every read-only request, wire bytes logged to example/logs/
+poetry run pytest        # spec and hardware vectors, no machine needed
+```
 
 ## Relevant documentation
 
