@@ -4,7 +4,8 @@ Captured 2026-09-22 with ``example/test.py`` at debug=2 (``example/logs/test-202
 USR-TCP232-306 at 10.1.70.202:8234, this client at link address 0x01 (the only address the master
 polls), NC idle in AUTO, programme %9001 selected, PLC running. The mode round-trip vectors are from
 ``example/logs/test-20260922-220419.log`` (write MANUAL, read back, write AUTO); the panel bytes are
-from ``example/logs/panel-20260922-221429.log`` (``poetry run panel``). Each vector is the complete
+from ``example/logs/panel-20260922-221429.log`` (``poetry run panel``); the other-segment reads
+from ``example/logs/test-20260922-222640.log`` (``poetry run test --read-only``). Each vector is the complete
 UNI-TELWAY frame as received, so these pin the whole unwrap + parse path against what the machine
 actually sends - not against the manual.
 """
@@ -55,6 +56,17 @@ LADDER_R16_B_MANUAL = frame("10 02 01 09 20 00 fe 00 00 00 66 40 07 e7")  # %R16
 PANEL_I0101_B = frame("10 02 01 09 20 00 fe 00 00 00 66 40 20 00")  # bit 5 = key switch "Freigabe"
 PANEL_Q0100_B = frame("10 02 01 09 20 00 fe 00 00 00 66 40 80 60")  # bit 7 = lamp "Achsenstopp quittiert"
 PANEL_I0123_B = frame("10 02 01 09 20 00 fe 00 00 00 66 40 c5 a5")  # feed potentiometer, 197
+
+# other segments 22:26: %V %W %M %S, word/long over the panel bytes, QUANTITY on bytes, an empty slot
+LADDER_W4_6 = frame("10 02 01 09 20 00 fe 00 00 00 66 06 00 a6")  # DPAUS = key switch %I0101.3 = 0
+LADDER_W202_B = frame("10 02 01 09 20 00 fe 00 00 00 66 40 c5 a5")  # AVPOTI2 = %I0123.B
+LADDER_M4004_W = frame("10 02 01 0a 20 00 fe 00 00 00 66 41 40 00 22")  # 64
+LADDER_S0_W = frame("10 02 01 0a 20 00 fe 00 00 00 66 41 00 00 e2")  # common word 0
+LADDER_V80_L = frame("10 02 01 0c 20 00 fe 00 00 00 66 42 00 20 00 11 16")  # %V80.0 %V80.4 %V82.5 set
+LADDER_I0100_L = frame("10 02 01 0c 20 00 fe 00 00 00 66 42 00 00 20 00 05")  # %I0101 = 0x20
+LADDER_Q0100_W = frame("10 02 01 0a 20 00 fe 00 00 00 66 41 01 00 e3")  # %Q0101 = 0x01
+LADDER_I0600_B = frame("10 02 01 09 20 00 fe 00 00 00 66 40 00 e0")  # slot 6 has no card: 0, no error
+LADDER_I0100_B_X5 = frame("10 02 01 0d 20 00 fe 00 00 00 66 40 00 20 00 00 00 04")  # QUANTITY 5 bytes
 
 
 def test_mirror():
@@ -159,3 +171,22 @@ def test_panel_io_bytes():
     assert parse_ladder_read_response(unwrap_unite_response(PANEL_Q0100_B), "B") == -128  # .B is signed
     assert parse_ladder_read_response(unwrap_unite_response(PANEL_Q0100_B), "B") & 0xFF == 0x80
     assert parse_ladder_read_response(unwrap_unite_response(PANEL_I0123_B), "B") & 0xFF == 197  # pot: unsigned
+
+
+def test_other_segments_answer():
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_W4_6), "6") is False
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_W202_B), "B") & 0xFF == 0xC5  # = %I0123.B
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_M4004_W), "W") == 64
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_S0_W), "W") == 0
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_I0600_B), "B") == 0
+
+
+def test_word_and_long_take_the_first_byte_as_msb():
+    # 938846 §4: %I0100.L = %I0100 (MSB) .. %I0103 (LSB); the NC sends that value little-endian (938914 §2)
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_I0100_L), "L") == 0x00200000
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_Q0100_W), "W") == 0x0001
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_V80_L), "L") == 0x11002000
+
+
+def test_quantity_counts_bytes_too():
+    assert unwrap_unite_response(LADDER_I0100_B_X5) == [0x66, 64, 0x00, 0x20, 0x00, 0x00, 0x00]

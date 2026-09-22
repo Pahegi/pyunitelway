@@ -1,7 +1,7 @@
 """Connectivity check against the NUM 1060.
 
-Everything is a read except the mode round-trip (MANUAL, then back to AUTO). Other writes stay
-commented out; uncomment one deliberately.
+Everything is a read except the mode round-trip (MANUAL, then back to AUTO); ``--read-only``
+skips it. Other writes stay commented out; uncomment one deliberately.
 
 Console shows INFO (one line per exchange + result); ``example/logs/test-<timestamp>.log`` gets
 DEBUG (every wire byte) so the machine's real answers can become test vectors.
@@ -78,13 +78,38 @@ def main():
         attempt(f"read_ladder {var} ({what})", lambda v=var: client.read_ladder(v))
     attempt("_read_objects %R1A.W x2", lambda: client._read_objects(0xA4, 65, 0x1A, 2))  # QUANTITY probe (B1)
 
+    # ---- ladder reads on the other segments; symbols per trace_signal.py, cross-checks against the panel ----
+    for var, what in [
+        ("%V700.0", "V__NOTAQUI Not-Aus quittiert, = lamp %Q0101.7"),
+        ("%V700.B", "the byte around it"),
+        ("%V80.1", "VVSSHT_AUF Schutztuer auf"),
+        ("%V80.L", "VL_AX__VST Vorschubstop alle Achsen"),
+        ("%V118.L", "VL_AX__VSQ1G Vorschubstop Gruppe 1"),
+        ("%W4.6", "DPAUS Dienstprogramme gesperrt, = key switch %I0101.3"),
+        ("%W100.0", "VFREIG1 Vorschubfreigabe Gruppe 1"),
+        ("%W14.B", "MODEDEM mode requested, never written by this PLC"),
+        ("%W202.B", "AVPOTI2, = %I0123.B feed pot"),
+        ("%M4010.W", "MFKT_CHN1 M-function index channel 1"),
+        ("%M4004.W", "MIDABL3IPC"),
+        ("%M77F8.W", "Hrsetfeh C-function handle"),
+        ("%S0.W", "common word 0 (938846 §3.9)"),
+        ("%I0100.L", "panel inputs 00-03 as one long: first byte is the MSB (938846 §4), 0x00200000 with the key in Freigabe"),
+        ("%Q0100.W", "panel lamps 00-01 as word"),
+        ("%I0600.B", "no card in slot 6: how does the NC refuse?"),
+    ]:
+        attempt(f"read_ladder {var} ({what})", lambda v=var: client.read_ladder(v))
+    attempt("_read_objects %I0100.B x5", lambda: client._read_objects(0xA8, 64, 0x0100, 5))  # QUANTITY on bytes
+
     # ---- mode round-trip: live write, segment 180 (938914 §4.1.3); the PLC never writes %W14.B ----
-    attempt("read_mode before", lambda: client.read_mode())
-    for mode in (Mode.MANUAL, Mode.AUTO):
-        attempt(f"write_mode {mode.name}", lambda m=mode: client.write_mode(m))
-        time.sleep(0.5)
-        attempt(f"read_mode after {mode.name}", lambda: client.read_mode())
-        attempt(f"read_ladder %R16.B after {mode.name}", lambda: client.read_ladder("%R16.B"))
+    if "--read-only" in sys.argv:
+        log.info("--read-only: mode round-trip skipped")
+    else:
+        attempt("read_mode before", lambda: client.read_mode())
+        for mode in (Mode.MANUAL, Mode.AUTO):
+            attempt(f"write_mode {mode.name}", lambda m=mode: client.write_mode(m))
+            time.sleep(0.5)
+            attempt(f"read_mode after {mode.name}", lambda: client.read_mode())
+            attempt(f"read_ladder %R16.B after {mode.name}", lambda: client.read_ladder("%R16.B"))
 
     # ---- other writes: keep commented out unless you mean it ----
     # client.write_message("Hello World!")  # displays text on the NC (A8: cannot send yet)

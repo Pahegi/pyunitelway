@@ -8,7 +8,7 @@ Verified on the machine (2026-09-22; the frames are regression vectors in `tests
 * `mirror` - link test
 * `get_unit_identification`, `get_unit_status`, `get_available_bytes_in_ram`
 * `read_mode` / `read_object` - NC objects, e.g. the operating mode as a `Mode` enum
-* `read_ladder` - PLC variables `%M %V %I %Q %R %W %S` as bit, byte, word or long word (verified on `%R`, `%I`, `%Q`)
+* `read_ladder` - PLC variables `%M %V %I %Q %R %W %S` as bit, byte, word or long word (verified on every segment)
 * `get_stations_managed_by_master`, `get_unit_fault_history`
 
 Verified live write: `write_mode` (segment 180, MANUAL and back to AUTO, read back over both

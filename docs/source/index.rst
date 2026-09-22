@@ -14,7 +14,7 @@ Status: prototype. Verified on the machine on 2026-09-22 (the frames are regress
 * ``get_available_bytes_in_ram``
 * ``read_mode`` / ``read_object`` - NC objects (938914 §4.1.3), e.g. the operating mode as ``Mode``
 * ``read_ladder`` - PLC variables ``%M %V %I %Q %R %W %S`` as bit, byte, word or long word (verified on
-  ``%R``, ``%I``, ``%Q``)
+  every segment)
 * ``get_stations_managed_by_master``, ``get_unit_fault_history``
 
 Verified live write (2026-09-22): ``write_mode`` - MANUAL and back to AUTO, read back over ``read_mode``
