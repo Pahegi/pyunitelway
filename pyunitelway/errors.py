@@ -65,3 +65,9 @@ class UnexpectedDataLength(UnitelwayError):
 class NoUniteResponse(UnitelwayError):
     def __init__(self, text, attempts):
         super().__init__(f"No answer to {text or 'the request'} after {attempts} attempt(s)")
+
+
+class WriteNotAllowed(UnitelwayError):
+    def __init__(self, target, allowed):
+        name = getattr(target, "name", target)
+        super().__init__(f"{name} is locked; unlock it with UnitelwayClient(writable={{{name!r}, ...}})")

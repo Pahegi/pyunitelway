@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools"]
-build-backend = "setuptools.build_meta"
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
 
 [tool.poetry]
 name = "pyunitelway"
@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Implementation of transport layer unitelway client and multiple application layer UNITE requests."
 authors = ["paul.hermann <paul.hermann@makerspace-darmstadt.de>"]
 readme = "README.md"
+packages = [{ include = "pyunitelway" }, { include = "example" }]
 
 [tool.poetry.dependencies]
 python = "~3.12"
@@ -20,3 +21,5 @@ debug_server = "example.debug_server:main"
 test = "example.test:main"
 listen = "example.listen:main"
 panel = "example.panel:main"
+write_checks = "example.write_checks:main"
+write_experiments = "example.write_experiments:main"

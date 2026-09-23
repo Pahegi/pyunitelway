@@ -68,6 +68,23 @@ LADDER_Q0100_W = frame("10 02 01 0a 20 00 fe 00 00 00 66 41 01 00 e3")  # %Q0101
 LADDER_I0600_B = frame("10 02 01 09 20 00 fe 00 00 00 66 40 00 e0")  # slot 6 has no card: 0, no error
 LADDER_I0100_B_X5 = frame("10 02 01 0d 20 00 fe 00 00 00 66 40 00 20 00 00 00 04")  # QUANTITY 5 bytes
 
+# first ladder write 2026-09-23 15:20 (example/logs/write-checks-20260923-152044.log): MSG2 %W16.B 0 -> 1 -> 0
+WRITE_MSG2_TX = frame("10 02 01 0f 20 00 fe 00 00 00 37 00 a5 40 16 00 01 00 01 74")
+WRITE_MSG2_ANSWER = frame("10 02 01 07 20 00 fe 00 00 00 fe 36")
+WRITE_MESSAGE_TX = frame("10 02 01 2b 20 00 fe 00 00 00 f5 00 4b 00 01 50 59 55 4e 49 54 45 4c 57 41 59 20 54 45 53 54 20 20 20 20 20 20 20 20 20 20 20 20 20 20 20 20 68")
+WRITE_MESSAGE_ANSWER = frame("10 02 01 08 20 00 fe 00 00 00 f5 fe 2c")  # F5 FE: the UC SII implements §4.17
+
+# bit and word writes 2026-09-23 15:23 on unnamed %V7800/%V7801 (example/logs/write-experiments-20260923-152306.log)
+LADDER_V7800_B_52 = frame("10 02 01 09 20 00 fe 00 00 00 66 40 52 32")  # pattern written, bit 3 clear
+LADDER_V7800_B_5A = frame("10 02 01 09 20 00 fe 00 00 00 66 40 5a 3a")  # after bit 3 <- 0x01, and after <- 0x80
+LADDER_V7800_B_12 = frame("10 02 01 09 20 00 fe 00 00 00 66 40 12 f2")  # after %V7800.W <- 0x1234, count 1
+LADDER_V7801_B_34 = frame("10 02 01 09 20 00 fe 00 00 00 66 40 34 14")
+LADDER_V7800_W_1234 = frame("10 02 01 0a 20 00 fe 00 00 00 66 41 34 12 28")
+
+# mode round-trip 2026-09-23 15:26 from HOMING (example/logs/test-20260923-152646.log)
+READ_MODE_HOMING = frame("10 02 01 0a 20 00 fe 00 00 00 66 00 08 00 a9")
+LADDER_R16_B_HOMING = frame("10 02 01 09 20 00 fe 00 00 00 66 40 08 e8")
+
 
 def test_mirror():
     assert parse_mirror_result(unwrap_unite_response(MIRROR)[1:], [0x00]) is True
@@ -190,3 +207,28 @@ def test_word_and_long_take_the_first_byte_as_msb():
 
 def test_quantity_counts_bytes_too():
     assert unwrap_unite_response(LADDER_I0100_B_X5) == [0x66, 64, 0x00, 0x20, 0x00, 0x00, 0x00]
+
+
+def test_first_ladder_write_and_supervisor_message():
+    c = UnitelwayClient(writable={"%W16.B"})
+    assert c._xway_to_unitelway(c._unite_to_xway([0x37, 0x00, 0xA5, 64, 0x16, 0x00, 0x01, 0x00, 0x01])) == WRITE_MSG2_TX
+    assert unwrap_unite_response(WRITE_MSG2_ANSWER) == [0xFE]
+    query = [0xF5, 0x00, 0x4B, 0x00, 1] + [ord(ch) for ch in "PYUNITELWAY TEST".ljust(32)]
+    assert c._xway_to_unitelway(c._unite_to_xway(query)) == WRITE_MESSAGE_TX
+    assert unwrap_unite_response(WRITE_MESSAGE_ANSWER) == [0xF5, 0xFE]
+
+
+def test_bit_and_word_writes_settled():
+    # any non-zero data byte sets a bit (0x01 and 0x80 both gave 0x5A), 0x00 clears it
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_V7800_B_52), "B") == 0x52
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_V7800_B_5A), "B") == 0x5A
+    # a word write with count 1 wrote both bytes, first byte MSB (938846 §4)
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_V7800_B_12), "B") == 0x12
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_V7801_B_34), "B") == 0x34
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_V7800_W_1234), "W") == 0x1234
+
+
+def test_mode_homing_read_back():
+    unite = unwrap_unite_response(READ_MODE_HOMING)
+    assert Mode(int.from_bytes(unite[2:], "little")) is Mode.HOMING
+    assert parse_ladder_read_response(unwrap_unite_response(LADDER_R16_B_HOMING), "B") == Mode.HOMING

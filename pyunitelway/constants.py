@@ -77,6 +77,9 @@ RESPONSE_CODES = {
 }
 
 # Ladder adresses
+# for UnitelwayClient(writable=...)
+ALL_LADDER_SEGMENTS = frozenset({"%M", "%V", "%S", "%R", "%W", "%I", "%Q"})
+
 LADDER_REQUEST = {
     "%M": 0xA1,
     "%V": 0xA0,

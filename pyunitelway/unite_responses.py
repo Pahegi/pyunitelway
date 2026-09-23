@@ -286,12 +286,23 @@ def parse_ladder_variable(variable):
     return symbol, symbol_request, logical_number, size, None
 
 
-def parse_ladder_read_response(response, size):
+def ladder_variable_name(variable):
+    """Canonical spelling of a ladder variable, so ``%W0016.B`` and ``%W16.B`` compare equal.
+
+    :rtype: str
+    :raises ValueError: Invalid variable
+    """
+    symbol, _segment, logical_number, size, _index = parse_ladder_variable(variable)
+    return f"{symbol}{logical_number:X}.{size}"
+
+
+def parse_ladder_read_response(response, size, signed=True):
     """Decode a ladder Read-Object answer: code / echoed specific byte / data (938914 §4.1.1).
 
     :param list[int] response: Answer bytes, starting at the answer code
     :param str size: Size suffix of the variable (``0``-``7``, ``B``, ``W``, ``L``, ``&``)
-    :returns: ``bool`` for a bit, signed ``int`` for ``.B``/``.W``/``.L``, unsigned for ``.&``
+    :param bool signed: Decode ``.B``/``.W``/``.L`` as signed (938846 §4) or unsigned (I/O bytes, pots)
+    :returns: ``bool`` for a bit, ``int`` for ``.B``/``.W``/``.L``, unsigned for ``.&``
     :raises UnexpectedObjectTypeResponse: Echoed specific byte differs from the one sent
     :raises UnexpectedDataLength: Data length does not match the size
     """
@@ -304,8 +315,8 @@ def parse_ladder_read_response(response, size):
         raise UnexpectedDataLength(expected, data)
     if size.isdigit():
         return bool(data[0])  # NC answers 0x80 for a set bit (2026-09-22), not 0x01
-    # 938914 §2: little-endian; 938846 §4: .B/.W/.L signed, .& an address
-    return int.from_bytes(bytes(data), "little", signed=(size != "&"))
+    # 938914 §2: little-endian; 938846 §4: .B/.W/.L signed by convention, .& an address
+    return int.from_bytes(bytes(data), "little", signed=(size != "&" and signed))
 
 
 def parse_write_result(response):

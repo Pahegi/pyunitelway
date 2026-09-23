@@ -9,7 +9,11 @@
 project = 'pyunitelway'
 copyright = '2022, Yoann DEWILDE'
 author = 'Yoann DEWILDE'
-release = '0.1'
+from importlib.metadata import PackageNotFoundError, version as _version
+try:
+    release = _version('pyunitelway')
+except PackageNotFoundError:
+    release = '0+unknown'
 
 # -- General configuration ---------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#general-configuration

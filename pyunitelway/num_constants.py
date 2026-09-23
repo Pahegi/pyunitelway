@@ -85,6 +85,9 @@ class Object(IntEnum):
     ACKNOWLEDGEMENT_OF_BLOCKING_MESSAGE = 0xE2  #$11 or $22
 
 
+ALL_NC_OBJECTS = frozenset(Object)  # for UnitelwayClient(writable=...)
+
+
 class ObjectSpec(NamedTuple):
     size: int  # bytes per object
     writable: bool  # "accessible for write", 938914 §4.1.3

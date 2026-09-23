@@ -19,8 +19,15 @@ Status: prototype. Verified on the machine on 2026-09-22 (the frames are regress
 
 Verified live write (2026-09-22): ``write_mode`` - MANUAL and back to AUTO, read back over ``read_mode``
 and ``%R16.B``. ``write_object`` for the other families and ``_write_objects`` are unit-tested only.
-Not implemented: ``write_ladder`` (raises), ``write_message`` (cannot
-send yet), file transfer and directory requests. ``shutdown`` is untested.
+Verified 2026-09-23: ``write_ladder`` (a ``%W`` byte written and restored; bit and word writes on unnamed
+``%V`` memory, each read back) and ``write_message`` (938914 §4.17; the NC lists it under E/A →
+Fehlermeldungen → Netz-Meldungen, no acknowledgement). Not implemented: file transfer and directory requests.
+``shutdown`` is untested.
+
+Writes are locked by default: ``write_ladder``, ``write_object`` and ``write_mode`` raise ``WriteNotAllowed``
+unless ``UnitelwayClient(writable={...})`` named the ladder segment (``"%W"``, where ``%W3.2`` is NC start),
+the variable (``"%W16.B"``) or the NC object (``Object.MODE_SELECTION``); ``ALL_LADDER_SEGMENTS`` and
+``ALL_NC_OBJECTS`` open everything.
 
 .. toctree::
    :maxdepth: 2

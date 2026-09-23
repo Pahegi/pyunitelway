@@ -1,10 +1,11 @@
 """Utilities functions module.
 """
 
+import operator
 import time
 
 from .constants import *
-from .num_constants import Mode, ladder_specific
+from .num_constants import Mode, ladder_size, ladder_specific
 from .errors import MalformedUnitelwayResponse, UnexpectedAdditionalAwnserCode, UnexpectedUniteResponse, UniteRequestFailed
 
 
@@ -81,6 +82,27 @@ def ladder_specific_byte(size):
     :rtype: int
     """
     return int(size) if size.isdigit() else ladder_specific[size]
+
+
+def encode_ladder_value(size, value, signed=True):
+    """Encode a value for Write-Object: a bit as one byte (non-zero = set, verified 2026-09-23), ``.B``/``.W``/``.L``
+    little-endian (938914 §2), so the first ladder byte is the MSB (938846 §4).
+
+    :param str size: ``0``-``7``, ``B``, ``W`` or ``L``
+    :param value: ``bool`` for a bit, else an ``int`` within the signed or unsigned range of the size
+    :rtype: list[int]
+    :raises ValueError: ``&``, non-integer, or out of range
+    """
+    if size.isdigit():
+        return [0x01 if value else 0x00]
+    if size == "&":
+        raise ValueError("an address (.&) cannot be written")
+    try:
+        return list(operator.index(value).to_bytes(ladder_size[size], "little", signed=signed))
+    except TypeError:
+        raise ValueError(f"an integer is required, got {value!r}") from None
+    except OverflowError:
+        raise ValueError(f"{value} does not fit a{'n unsigned' if not signed else ' signed'} .{size}") from None
 
 
 def encode_object(spec, value):

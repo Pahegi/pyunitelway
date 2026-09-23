@@ -9,10 +9,11 @@ import time
 
 from pyunitelway.constants import *
 from pyunitelway.conversion import unwrap_unite_response
-from pyunitelway.errors import NoPollingWindow, NoUniteResponse, UnexpectedDataLength, UnexpectedUniteResponse
+from pyunitelway.errors import NoPollingWindow, NoUniteResponse, UnexpectedDataLength, UnexpectedUniteResponse, WriteNotAllowed
 from pyunitelway.num_constants import OBJECT_SPEC, Mode, Object
 from pyunitelway.unite_responses import (
     decode_object,
+    ladder_variable_name,
     parse_available_bytes_in_ram,
     parse_ladder_read_response,
     parse_ladder_variable,
@@ -28,6 +29,7 @@ from pyunitelway.utils import (
     check_specific_answer,
     compute_bcc,
     duplicate_dle,
+    encode_ladder_value,
     encode_object,
     format_hex_list,
     get_response_code,
@@ -52,15 +54,29 @@ class UnitelwayClient:
     :param int xway_ext1: X-WAY ext1 (5/6-level addressing, 35000789 p.55)
     :param int xway_ext2: X-WAY ext2
     :param bool VPN_Mode: Skip the polling window, the ACK and the answer timeout (tunnelled links only)
+    :param writable: What may be written: ladder segments (``"%W"``), variables (``"%W16.B"``), NC objects
+        (``Object.MODE_SELECTION``); ``ALL_LADDER_SEGMENTS`` / ``ALL_NC_OBJECTS``. Default: nothing
     """
 
-    def __init__(self, slave_address=0x01, category_code=0x00, xway_network=0x00, xway_station=0xFE, xway_gate=0x00, xway_ext1=0x00, xway_ext2=0x00, VPN_Mode=False):
+    def __init__(self, slave_address=0x01, category_code=0x00, xway_network=0x00, xway_station=0xFE, xway_gate=0x00, xway_ext1=0x00, xway_ext2=0x00, VPN_Mode=False,
+                 writable=()):
         self._unitelway_start = [DLE, STX, slave_address]
         self._xway_start = [0x20, xway_network, xway_station, xway_gate, xway_ext1, xway_ext2]  # 0x20: standard NPDU
         self.category_code = category_code
         self.link_address = slave_address
         self.VPN_Mode = VPN_Mode
+        self.writable = frozenset(self._writable_entry(w) for w in writable)  # write guard
         self.socket = None
+
+    @staticmethod
+    def _writable_entry(entry):
+        if isinstance(entry, Object):
+            return entry
+        if isinstance(entry, str) and entry in LADDER_REQUEST:
+            return entry
+        if isinstance(entry, str):
+            return ladder_variable_name(entry)
+        raise ValueError(f"not an Object, ladder segment or ladder variable: {entry!r}")
 
     # ------- socket -------
 
@@ -328,8 +344,12 @@ class UnitelwayClient:
         :param value: ``Mode``, ``int``, list of long words or raw bytes, per the spec
         :param int address: Object index in the family
         :returns: ``True`` on the ``0xFE`` answer
+        :raises WriteNotAllowed: ``obj`` not unlocked on this client
         :raises ValueError: Read-only object or malformed value
         """
+        obj = Object(obj)
+        if obj not in self.writable:
+            raise WriteNotAllowed(obj, self.writable)
         spec = OBJECT_SPEC[obj]
         if not spec.writable:
             raise ValueError(f"{obj.name} is read-only (938914 §4.1.3)")
@@ -343,21 +363,23 @@ class UnitelwayClient:
         return self.read_object(Object.MODE_SELECTION)
 
     def write_mode(self, mode):
-        """Select the NC mode, segment 180. **Live on the machine** - %R16.B is read by 36 PLC networks.
+        """Select the NC mode, segment 180. **Live**; needs ``Object.MODE_SELECTION`` in ``writable``.
 
         :param Mode mode: Mode to select
         :returns: ``True`` on the ``0xFE`` answer
+        :raises WriteNotAllowed: Segment 180 not unlocked on this client
         """
         return self.write_object(Object.MODE_SELECTION, Mode(mode))
 
     # ------- ladder variables (938914 §4.1.3.3, 938846 §15) -------
 
-    def read_ladder(self, variable):
+    def read_ladder(self, variable, signed=True):
         """Read one ladder variable.
 
         :param str variable: ``%SNNNN.S`` - symbol ``%M %V %I %Q %R %W %S``, hex logical number, size
             ``.0``-``.7`` (bit), ``.B``, ``.W``, ``.L`` or ``.&``. Index fields are not supported.
-        :returns: ``bool`` for a bit, signed ``int`` for ``.B``/``.W``/``.L``, address ``int`` for ``.&``
+        :param bool signed: ``.B``/``.W``/``.L`` as signed (938846 §4) or unsigned (I/O bytes, potentiometers)
+        :returns: ``bool`` for a bit, ``int`` for ``.B``/``.W``/``.L``, address ``int`` for ``.&``
         :raises ValueError: Invalid variable
         :raises UnexpectedUniteResponse: Answer code is not ``0x66``
         :raises UnexpectedObjectTypeResponse: Echoed specific byte differs
@@ -365,19 +387,28 @@ class UnitelwayClient:
         """
         (_symbol, segment, address, size, _index) = parse_ladder_variable(variable)
         resp = self._read_objects(segment, ladder_specific_byte(size), address, 1)
-        return parse_ladder_read_response(resp, size)
+        return parse_ladder_read_response(resp, size, signed)
 
-    def write_ladder(self, variable, data):
-        """Write a ladder variable - **not implemented**: validates ``variable`` and raises.
+    def write_ladder(self, variable, value, signed=True):
+        """Write one ladder variable. **Live on the machine.**
 
         .. WARNING::
-            Writes are live on the machine. Trace the address with the bundle's ``trace_signal.py``
-            before implementing this (see todo.md).
+            Trace the address with ``trace_signal.py`` first; ``%W3.2`` is NC start. Locked unless ``writable=``
+            names it.
 
-        :raises NotImplementedError: Always, after validating ``variable``
+        :param str variable: As for :meth:`read_ladder`
+        :param value: ``bool`` for a bit, else an ``int`` in the signed or unsigned range of the size
+        :param bool signed: Which range ``value`` must fit
+        :returns: ``True`` on the ``0xFE`` answer
+        :raises WriteNotAllowed: Neither the variable nor its segment is unlocked on this client
+        :raises ValueError: Invalid variable, ``.&``, or value out of range
         """
-        parse_ladder_variable(variable)
-        raise NotImplementedError("write_ladder is not implemented yet (todo.md A2/A3)")
+        (symbol, segment, address, size, _index) = parse_ladder_variable(variable)
+        name = ladder_variable_name(variable)
+        if symbol not in self.writable and name not in self.writable:
+            raise WriteNotAllowed(name, self.writable)
+        data = encode_ladder_value(size, value, signed)
+        return self._write_objects(segment, ladder_specific_byte(size), address, 1, data)
 
     # ------- general purpose requests (938914 §4.3 - §4.8) -------
 
@@ -451,19 +482,29 @@ class UnitelwayClient:
         return parse_available_bytes_in_ram(resp)
 
     def write_message(self, message):
-        # TODO A8: num_lines is a float and the data is not padded to 32 bytes per line (§4.17)
-        """Display a supervisor message on the NC (§4.17). **Untested, cannot send yet.**
+        """Display a supervisor message on the NC (938914 §4.17, request F5/4B). **Live, unverified.**
 
-        :param str message: Up to 96 printable ASCII characters
-        :returns: ``True`` on the positive answer
+        :param message: One to three lines of up to 32 printable ASCII characters (``0x20``-``0x7F``):
+            a ``str`` with ``\\n`` between lines, or a list of lines. Each line is padded to 32 bytes.
+        :returns: ``True`` on the positive answer (``0xFE`` per §4.17, ``0x7B`` per the §3.6 table)
+        :raises ValueError: No line, more than three, a line over 32 characters, or a non-printable character
+        :raises UniteRequestFailed: Negative report ``0xFD`` (request unknown)
         """
-        if len(message) > 96:
-            raise ValueError("The message is too long. It must be 96 characters maximum.")
-        num_lines = len(message) / 32
-        query = [SPECIFIC_REQUEST, self.category_code, WRITE_MESSAGE, 0x00, num_lines]
-        query += [ord(c) for c in message]
-        resp = self.run_unite(self.link_address, query, text="WRITE_MESSAGE")
-        check_specific_answer(resp, WRITE_MESSAGE, also_accept=(0xFE,))  # §4.17 says FE, the §3.6 table 7B
+        lines = message.split("\n") if isinstance(message, str) else list(message)
+        if not 1 <= len(lines) <= 3:
+            raise ValueError(f"1 to 3 message lines, got {len(lines)}")
+        if not any(line.strip() for line in lines):
+            raise ValueError("empty message")
+        data = []
+        for line in lines:
+            if len(line) > 32:
+                raise ValueError(f"line longer than 32 characters: {line!r}")
+            if any(not 0x20 <= ord(c) <= 0x7F for c in line):
+                raise ValueError(f"non-printable character in {line!r} (allowed: 0x20-0x7F)")
+            data += [ord(c) for c in line.ljust(32)]
+        query = [SPECIFIC_REQUEST, self.category_code, WRITE_MESSAGE, 0x00, len(lines)] + data  # index byte: not significant
+        resp = self.run_unite(self.link_address, query, text=f"WRITE_MESSAGE {len(lines)} line(s)")
+        check_specific_answer(resp, WRITE_MESSAGE, also_accept=(0xFE,))
         return True
 
     def shutdown(self):

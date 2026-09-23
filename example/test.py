@@ -1,7 +1,7 @@
 """Connectivity check against the NUM 1060.
 
-Everything is a read except the mode round-trip (MANUAL, then back to AUTO); ``--read-only``
-skips it. Other writes stay commented out; uncomment one deliberately.
+Everything is a read except the mode round-trip (to MANUAL, then back to the mode found);
+``--read-only`` skips it. Other writes stay commented out; uncomment one deliberately.
 
 Console shows INFO (one line per exchange + result); ``example/logs/test-<timestamp>.log`` gets
 DEBUG (every wire byte) so the machine's real answers can become test vectors.
@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from pyunitelway import UnitelwayClient
-from pyunitelway.num_constants import Mode
+from pyunitelway.num_constants import Mode, Object
 
 ADAPTER_IP = "10.1.70.202"
 ADAPTER_PORT = 8234
@@ -51,7 +51,8 @@ def attempt(label, call):
 
 def main():
     setup_logging()
-    client = UnitelwayClient()  # slave_address=0x01: the only address this master polls (poetry run listen)
+    # slave_address=0x01: the only address this master polls (poetry run listen); segment 180 unlocked for the round-trip
+    client = UnitelwayClient(writable={Object.MODE_SELECTION})
     client.connect_socket(ADAPTER_IP, ADAPTER_PORT)
     # client.connect_socket("127.0.0.1", 8234)  # debug mockup server
 
@@ -100,12 +101,13 @@ def main():
         attempt(f"read_ladder {var} ({what})", lambda v=var: client.read_ladder(v))
     attempt("_read_objects %I0100.B x5", lambda: client._read_objects(0xA8, 64, 0x0100, 5))  # QUANTITY on bytes
 
-    # ---- mode round-trip: live write, segment 180 (938914 §4.1.3); the PLC never writes %W14.B ----
+    # ---- mode round-trip: live write, segment 180 (938914 §4.1.3); ends in the mode it found ----
     if "--read-only" in sys.argv:
         log.info("--read-only: mode round-trip skipped")
     else:
-        attempt("read_mode before", lambda: client.read_mode())
-        for mode in (Mode.MANUAL, Mode.AUTO):
+        before = attempt("read_mode before", lambda: client.read_mode())
+        other = Mode.MANUAL if before != Mode.MANUAL else Mode.AUTO
+        for mode in (other, before):
             attempt(f"write_mode {mode.name}", lambda m=mode: client.write_mode(m))
             time.sleep(0.5)
             attempt(f"read_mode after {mode.name}", lambda: client.read_mode())

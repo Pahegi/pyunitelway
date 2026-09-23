@@ -12,8 +12,12 @@ Verified on the machine (2026-09-22; the frames are regression vectors in `tests
 * `get_stations_managed_by_master`, `get_unit_fault_history`
 
 Verified live write: `write_mode` (segment 180, MANUAL and back to AUTO, read back over both
-`read_mode` and `%R16.B`). `write_object` for the other families is unit-tested only. Not implemented:
-`write_ladder` (raises), `write_message`, file transfer, directory requests.
+`read_mode` and `%R16.B`); `write_ladder` (2026-09-23: MSG2 `%W16.B` written and restored, bit and word writes
+on unnamed `%V` memory, all read back); `write_message` (shown under E/A → Fehlermeldungen → Netz-Meldungen).
+One lock for every write: nothing is writable unless
+`UnitelwayClient(writable={...})` names the ladder segment (`"%W"`), the variable (`"%W16.B"`) or the NC
+object (`Object.MODE_SELECTION`); `ALL_LADDER_SEGMENTS` / `ALL_NC_OBJECTS` open everything. `write_object` for the other families is
+unit-tested only. Not implemented: file transfer, directory requests.
 
 ## Usage
 
@@ -34,6 +38,8 @@ client.disconnect_socket()
 poetry run listen        # receive only: which link addresses does the master poll?
 poetry run test          # every read-only request + the mode round-trip, wire bytes logged to example/logs/
 poetry run panel         # the operator panel (buttons, lamps, key switch, pots) as the PLC sees it; --watch 1
+poetry run write_checks [--dry-run]       # MSG2 %W16.B write, read back, restore; then a screen message
+poetry run write_experiments [--dry-run] # bit and word writes on unnamed %V7800, read back, restore
 poetry run pytest        # spec and hardware vectors, no machine needed
 ```
 

@@ -25,10 +25,12 @@ from pyunitelway.errors import (
     UnexpectedDataLength,
     UnexpectedUniteResponse,
     UniteRequestFailed,
+    WriteNotAllowed,
 )
 from pyunitelway.conversion import unwrap_unite_response
-from pyunitelway.num_constants import Mode, Object
-from pyunitelway.utils import check_specific_answer, is_valid_response_code
+from pyunitelway.constants import ALL_LADDER_SEGMENTS
+from pyunitelway.num_constants import ALL_NC_OBJECTS, Mode, Object
+from pyunitelway.utils import check_specific_answer, encode_ladder_value, is_valid_response_code
 
 import test_hardware_vectors as hv
 from test_conversion import wire_frame
@@ -37,9 +39,9 @@ from test_conversion import wire_frame
 MEMORY_FREE_ANSWER = [0xF5, 0x77, 0x00, 0xD0, 0x10, 0x01, 0x00]
 
 
-def client_answering(answer, sent=None):
+def client_answering(answer, sent=None, **kwargs):
     """A client whose run_unite returns a canned UNI-TE answer and records the query."""
-    c = UnitelwayClient()
+    c = UnitelwayClient(**kwargs)
 
     def fake_run_unite(address, query, *args, **kwargs):
         if sent is not None:
@@ -239,12 +241,118 @@ class TestReadLadder:
         assert c.read_ladder("%R5.1") is True
         assert sent[0][3] == 1
 
-    def test_write_ladder_raises_before_sending(self):
+    def test_unsigned_read(self):
+        c = client_answering([0x66, 64, 0xC5])
+        assert c.read_ladder("%I0123.B") == -59  # 938846 §4 convention
+        assert c.read_ladder("%I0123.B", signed=False) == 197  # the feed-override pot
+
+
+class TestWriteLadder:
+    def test_default_client_writes_nothing(self):
         sent = []
         c = client_answering([0xFE], sent)
-        with pytest.raises(NotImplementedError):
-            c.write_ladder("%W3.2", 1)
+        for var in ("%V7800.B", "%W16.B", "%Q0100.B", "%M4004.W", "%S0.W"):
+            with pytest.raises(WriteNotAllowed):
+                c.write_ladder(var, 1)
         assert sent == []
+
+    def test_unlocked_segment(self):
+        sent = []
+        c = UnitelwayClient(writable={"%V"})
+        c.run_unite = lambda a, q, *args, **kw: sent.append(list(q)) or [0xFE]
+        assert c.write_ladder("%V7800.B", 0x5A) is True
+        assert sent == [[0x37, 0x00, 0xA0, 64, 0x00, 0x78, 0x01, 0x00, 0x5A]]
+        with pytest.raises(WriteNotAllowed):
+            c.write_ladder("%W16.B", 1)
+
+    def test_unlocked_exact_variable_only(self):
+        sent = []
+        c = UnitelwayClient(writable={"%W0016.B"})  # spelled differently on purpose
+        c.run_unite = lambda a, q, *args, **kw: sent.append(list(q)) or [0xFE]
+        assert c.write_ladder("%W16.B", 1) is True  # MSG2
+        assert sent == [[0x37, 0x00, 0xA5, 64, 0x16, 0x00, 0x01, 0x00, 0x01]]
+        for var in ("%W3.2", "%W16.W", "%W17.B"):  # NC start, another size, the neighbour
+            with pytest.raises(WriteNotAllowed):
+                c.write_ladder(var, 1)
+        assert len(sent) == 1
+
+    def test_all_segments_and_bad_entries(self):
+        c = UnitelwayClient(writable=ALL_LADDER_SEGMENTS)
+        c.run_unite = lambda a, q, *args, **kw: [0xFE]
+        assert c.write_ladder("%W3.B", 0) is True
+        with pytest.raises(ValueError):
+            UnitelwayClient(writable={"%X1.B"})
+
+    def test_word_and_long_encoding_is_the_read_layout_in_reverse(self):
+        # %R1A.W = 9001 came as 29 23; %I0100.L = 0x00200000 came as 00 00 20 00 (hardware vectors)
+        assert encode_ladder_value("W", 9001) == [0x29, 0x23]
+        assert encode_ladder_value("L", 0x00200000) == [0x00, 0x00, 0x20, 0x00]
+        assert encode_ladder_value("W", -1) == [0xFF, 0xFF]
+
+    def test_word_long_and_bit_writes(self):
+        # verified 2026-09-23 on %V7800: count 1 writes the whole word; any non-zero data byte sets a bit
+        sent = []
+        c = client_answering([0xFE], sent, writable={"%V"})
+        c.write_ladder("%V7800.W", 0x1234)
+        c.write_ladder("%V7800.3", True)
+        c.write_ladder("%V7800.3", False)
+        assert sent[0] == [0x37, 0x00, 0xA0, 65, 0x00, 0x78, 0x01, 0x00, 0x34, 0x12]
+        assert sent[1] == [0x37, 0x00, 0xA0, 3, 0x00, 0x78, 0x01, 0x00, 0x01]
+        assert sent[2] == [0x37, 0x00, 0xA0, 3, 0x00, 0x78, 0x01, 0x00, 0x00]
+
+    def test_value_range(self):
+        sent = []
+        c = client_answering([0xFE], sent, writable={"%V"})
+        with pytest.raises(ValueError):
+            c.write_ladder("%V0.B", 200)
+        assert c.write_ladder("%V0.B", 200, signed=False) is True
+        assert sent[-1][-1] == 0xC8
+        with pytest.raises(ValueError):
+            c.write_ladder("%V0.B", -1, signed=False)
+        assert c.write_ladder("%V0.B", -1) is True
+        assert sent[-1][-1] == 0xFF
+
+    def test_address_refused_before_sending(self):
+        sent = []
+        c = client_answering([0xFE], sent, writable={"%V"})
+        with pytest.raises(ValueError):
+            c.write_ladder("%V7800.&", 0)
+        assert sent == []
+
+    def test_unexpected_answer_code(self):
+        c = client_answering([0x66, 64, 0x00], writable={"%V"})
+        with pytest.raises(UnexpectedUniteResponse):
+            c.write_ladder("%V0.B", 1)
+
+
+class TestWriteMessage:
+    def test_one_line_padded_to_32(self):
+        sent = []
+        c = client_answering([0xF5, 0xFE], sent)
+        assert c.write_message("PYUNITELWAY TEST") is True
+        assert sent[0][:5] == [0xF5, 0x00, 0x4B, 0x00, 1]
+        assert sent[0][5:] == [ord(ch) for ch in "PYUNITELWAY TEST".ljust(32)]
+
+    def test_three_lines(self):
+        sent = []
+        c = client_answering([0xF5, 0x7B], sent)  # the §3.6 table's code is accepted too
+        assert c.write_message(["A", "B" * 32, ""]) is True
+        assert sent[0][4] == 3 and len(sent[0]) == 5 + 96
+        assert c.write_message("one\ntwo") is True
+        assert sent[1][4] == 2 and len(sent[1]) == 5 + 64
+
+    def test_rejections_before_sending(self):
+        sent = []
+        c = client_answering([0xF5, 0xFE], sent)
+        for bad in ("", "a\nb\nc\nd", "x" * 33, "tab\there", "umlaut ä"):
+            with pytest.raises(ValueError):
+                c.write_message(bad)
+        assert sent == []
+
+    def test_negative_report(self):
+        c = client_answering([0xF5, 0xFD])
+        with pytest.raises(UniteRequestFailed):
+            c.write_message("x")
 
 
 class TestObjects:
@@ -254,13 +362,24 @@ class TestObjects:
 
     def test_write_mode_builds_the_frame_captured_in_2025(self):
         sent = []
-        c = client_answering([0xFE], sent)
+        c = client_answering([0xFE], sent, writable={Object.MODE_SELECTION})
         assert c.write_mode(Mode.MDI) is True
         assert sent == [[0x37, 0x00, 0xB4, 0x00, 0x00, 0x00, 0x01, 0x00, 0x02, 0x00]]
 
-    def test_read_only_object_refuses_to_write(self):
+    def test_nc_objects_are_locked_by_default(self):
         sent = []
         c = client_answering([0xFE], sent)
+        with pytest.raises(WriteNotAllowed):
+            c.write_mode(Mode.MDI)
+        with pytest.raises(WriteNotAllowed):
+            c.write_object(Object.CURRENT_PROGRAMME_NUMBER, 1)
+        assert sent == []
+        c = client_answering([0xFE], sent, writable=ALL_NC_OBJECTS)
+        assert c.write_object(Object.CURRENT_PROGRAMME_NUMBER, 1) is True
+
+    def test_read_only_object_refuses_to_write(self):
+        sent = []
+        c = client_answering([0xFE], sent, writable=ALL_NC_OBJECTS)
         with pytest.raises(ValueError):
             c.write_object(Object.AXIS_MEASUREMENT, [0] * 9)
         assert sent == []
@@ -271,9 +390,17 @@ class TestObjects:
             c.read_object(Object.MODE_SELECTION)
 
     def test_longs_and_int(self):
-        c = client_answering([0x66, 0x00] + list((-5).to_bytes(4, "little", signed=True)) * 9)
+        c = client_answering([0x66, 0x00] + list((-5).to_bytes(4, "little", signed=True)) * 9, writable=ALL_NC_OBJECTS)
         assert c.read_object(Object.AXIS_MEASUREMENT) == [-5] * 9
         sent = []
-        c = client_answering([0xFE], sent)
+        c = client_answering([0xFE], sent, writable=ALL_NC_OBJECTS)
         c.write_object(Object.CURRENT_PROGRAMME_NUMBER, 9001)
         assert sent[0][-2:] == [0x29, 0x23]
+
+
+class TestEncodeLadderValueRejectsNonIntegers:
+    def test_float_and_str(self):
+        c = client_answering([0xFE], writable={"%V"})
+        for bad in (1.5, "1", None):
+            with pytest.raises(ValueError):
+                c.write_ladder("%V0.B", bad)

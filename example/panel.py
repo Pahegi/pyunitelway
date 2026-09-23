@@ -90,7 +90,7 @@ def read_panel(client):
     values = {}
     for addr in INPUT_BYTES + OUTPUT_BYTES + [p[0] for p in POTS]:
         try:
-            values[addr] = client.read_ladder(f"{addr}.B") & 0xFF  # .B answers signed
+            values[addr] = client.read_ladder(f"{addr}.B", signed=False)
         except Exception:
             log.error("%s.B failed", addr, exc_info=True)
             values[addr] = None
