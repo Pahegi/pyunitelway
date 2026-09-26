@@ -78,3 +78,17 @@ class FileTransferError(UnitelwayError):
     def __init__(self, request, status, meaning):
         self.status = status
         super().__init__(f"{request}: status {status}, {meaning}")
+
+
+class ProgramRefused(UnitelwayError):
+    """write_program() refused before Open-Download-Sequence: nothing was sent."""
+
+    def __init__(self, name, reason):
+        super().__init__(f"{name} refused, nothing sent: {reason}")
+
+
+class ProgramNotVerified(UnitelwayError):
+    """The programme was downloaded and closed, but the directory or the read-back does not match."""
+
+    def __init__(self, name, reason):
+        super().__init__(f"{name} downloaded but not verified: {reason}")

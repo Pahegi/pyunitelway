@@ -10,12 +10,20 @@ UNI-TELWAY frame as received, so these pin the whole unwrap + parse path against
 actually sends - not against the manual.
 """
 
+import pytest
+
 from pyunitelway.client import UnitelwayClient
 from pyunitelway.conversion import unwrap_unite_response
+from pyunitelway.errors import FileTransferError
 from pyunitelway.num_constants import Mode, Program
+from pyunitelway.utils import check_specific_answer, file_identification
 from pyunitelway.unite_responses import (
     parse_available_bytes_in_ram,
+    parse_delete_file,
     parse_directory,
+    parse_download_close,
+    parse_download_open,
+    parse_download_segment,
     parse_upload_segment,
     parse_ladder_read_response,
     parse_mirror_result,
@@ -444,3 +452,55 @@ def test_axis_calibration_upload():
     c = UnitelwayClient()
     assert c._xway_to_unitelway(c._unite_to_xway([0x3D, 0x00, 0, 0, 0, 0x02, 0, 0, 0, 0])) == AXCAL_OPEN_TX
     assert parse_upload_segment(unwrap_unite_response(AXCAL_SEGMENT), 1) == (15, b"%12205000 ;0A\r\n\x13;01\r\n")
+
+
+# 2026-09-26 20:47-20:51, the first downloads to this machine (todo.md K steps 1-3, ``example/logs/backup-download-step*``):
+# Open-Download-Sequence %7777.0 (index 77770 = H'12FCA') answered 0, an immediate close answered 0 and left an empty
+# 28-byte programme; opening the now existing %7777.0 answered 1 "file already exists"; write_program(7778, ...) sent one
+# 19-byte segment, answered 6B 00 01 00, closed with 0, and read the programme back byte for byte.
+DOWNLOAD_OPEN_7777_TX = frame("10 02 01 10 10 20 00 fe 00 00 00 3a 00 ca 2f 01 12 00 00 00 00 97")
+DOWNLOAD_OPEN_OK = frame("10 02 01 08 20 00 fe 00 00 00 6a 00 a3")
+DOWNLOAD_OPEN_EXISTS = frame("10 02 01 08 20 00 fe 00 00 00 6a 01 a4")
+DOWNLOAD_SEGMENT_7778_TX = frame("10 02 01 1f 20 00 fe 00 00 00 3b 00 01 00 13 00 4e 31 30 20 47 34 20 46 31 0d 0a 4e 32 30 20 4d 32 0d 0a fd")
+DOWNLOAD_SEGMENT_ANSWER = frame("10 02 01 0a 20 00 fe 00 00 00 6b 00 01 00 a7")
+DOWNLOAD_CLOSE_TX = frame("10 02 01 08 20 00 fe 00 00 00 3c 00 75")
+DOWNLOAD_CLOSE_OK = frame("10 02 01 08 20 00 fe 00 00 00 6c 00 a5")
+UPLOAD_7778_SEGMENT = frame("10 02 01 1f 20 00 fe 00 00 00 6e 0f 01 00 13 00 4e 31 30 20 47 34 20 46 31 0d 0a 4e 32 30 20 4d 32 0d 0a 00")
+
+
+def test_download_frames_as_sent_and_answered():
+    c = UnitelwayClient()
+    assert c._xway_to_unitelway(c._unite_to_xway([0x3A, 0x00] + file_identification(0x12, 77770))) == DOWNLOAD_OPEN_7777_TX
+    assert parse_download_open(unwrap_unite_response(DOWNLOAD_OPEN_OK)) == 0
+    with pytest.raises(FileTransferError, match="file already exists"):
+        parse_download_open(unwrap_unite_response(DOWNLOAD_OPEN_EXISTS))
+    segment = b"N10 G4 F1\r\nN20 M2\r\n"
+    query = [0x3B, 0x00, 0x01, 0x00, len(segment), 0x00] + list(segment)
+    assert c._xway_to_unitelway(c._unite_to_xway(query)) == DOWNLOAD_SEGMENT_7778_TX
+    assert parse_download_segment(unwrap_unite_response(DOWNLOAD_SEGMENT_ANSWER), 1) == 0
+    assert c._xway_to_unitelway(c._unite_to_xway([0x3C, 0x00])) == DOWNLOAD_CLOSE_TX
+    assert parse_download_close(unwrap_unite_response(DOWNLOAD_CLOSE_OK)) == 0
+
+
+# 2026-09-26 20:55 (todo.md K step 5): a segment whose last block has no CR LF is accepted, and the close then answers
+# status 11 "file deleted: the last block loaded did not end with LF"; %7780.0 was not in the directory afterwards.
+DOWNLOAD_CLOSE_DELETED = frame("10 02 01 08 20 00 fe 00 00 00 6c 0b b0")
+
+
+def test_download_close_deleted_the_file():
+    with pytest.raises(FileTransferError, match="did not end with LF"):
+        parse_download_close(unwrap_unite_response(DOWNLOAD_CLOSE_DELETED))
+
+
+# 2026-09-26 20:57 (todo.md K): Delete-File F5/46 for the empty %7777.0 (index 77770) answered F5 76 00 and the
+# directory no longer listed it (``example/logs/backup-delete-step1-20260926-205754.log``).
+DELETE_7777_TX = frame("10 02 01 0d 20 00 fe 00 00 00 f5 00 46 ca 2f 01 12 85")
+DELETE_ANSWER = frame("10 02 01 09 20 00 fe 00 00 00 f5 76 00 a5")
+
+
+def test_delete_file_frames():
+    c = UnitelwayClient()
+    assert c._xway_to_unitelway(c._unite_to_xway([0xF5, 0x00, 0x46] + file_identification(0x12, 77770)[:4])) == DELETE_7777_TX
+    unite = unwrap_unite_response(DELETE_ANSWER)
+    check_specific_answer(unite, 0x46)
+    assert parse_delete_file(unite) == 0

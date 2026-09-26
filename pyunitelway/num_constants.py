@@ -94,6 +94,8 @@ class Action(IntEnum):
     CYCLE_START = 0x24  # UNI-TE Run (938914 §4.9): CYCLE START in the current mode, past the ladder's start memory
     CYCLE_STOP = 0x25  # UNI-TE Stop (938914 §4.10 "FEED STOP"): the CYHLD machining stop, spindle keeps turning; verified 2026-09-26
     FEED_STOP = 0x25  # alias: the request's name in 938914
+    WRITE_PROGRAM = 0x3A  # Open-Download-Sequence (938914 §4.12): store a part programme in the NC RAM; verified 2026-09-26
+    DELETE_PROGRAM = 0x46  # Delete-File (938914 §4.14, F5/46): remove a part programme from the NC RAM; verified 2026-09-26
 
 
 class ObjectSpec(NamedTuple):
@@ -181,3 +183,10 @@ class Program(NamedTuple):
     @property
     def name(self):
         return f"%{self.number}.{self.group}"
+
+
+# Part programmes write_program() never touches (todo.md K): IMA's own programmes below %9000 as the 2023 NCDat backup and
+# the 2026-09-26 directory list them; %9000 upward (9001 active programme, 9997 Verrechnungen, ...) is refused by range.
+PROGRAM_NUMBER_MAX = 8999
+IMA_PROGRAM_NUMBERS = frozenset({5, 6, 8, 9, 10, 11, 12, 14, 30, 31, 32, 33, 34, 35, 81, 83, 85, 86, 89, 91, 92, 93, 95,
+                                 97, 98, 100, 101, 111, 602, 603, 609})

@@ -28,7 +28,12 @@ The panel latches ``write_extraction_hood`` (``%Q0100.3``, ``True`` lifted the h
 ``read_directory``, ``read_program``, ``read_machine_parameters``, ``read_plc_archive`` (plus ``read_macros``, file type
 H'03', the resident-macro areas, and ``read_axis_calibration``, H'02', both verified 2026-09-26 and empty on this machine) (bytes; the NC's single
 transfer slot is closed in every case - the ladder archive is the one type the NC does not close itself), driven by
-``poetry run backup``. No download, no Delete-File.
+``poetry run backup``. Download (938914 §4.12): ``write_program(number, text)`` stores one part programme (verified
+2026-09-26, todo.md K: one- and three-segment programmes read back byte for byte, an existing number answers status 1):
+the only download in the library, locked behind ``Action.WRITE_PROGRAM``; it refuses IMA's
+programme numbers, anything the directory already lists, the active programme, a running or editing NC and text the NC
+would reject before a byte goes out, and reads the file back afterwards. ``delete_program(number)`` (Delete-File, 938914
+§4.14, ``F5/46``) removes one part programme behind ``Action.DELETE_PROGRAM`` with the same refusals (verified 2026-09-26).
 ``cycle_start`` (UNI-TE Run, 938914 §4.9: CYCLE START in the current mode, ``False`` on the NC's refusal) was
 verified 2026-09-26 in MDI: a ``G4 F2`` dwell ran, a ``G0 X2000`` block moved the machine; ``read_cycle_in_progress``
 reads ``%R3.2`` E_CYCLE. ``cycle_stop`` (UNI-TE Stop, 938914 §4.10: the CYHLD machining stop, the spindle keeps turning,

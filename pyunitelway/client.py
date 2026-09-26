@@ -9,16 +9,21 @@ import time
 
 from pyunitelway.constants import *
 from pyunitelway.conversion import unwrap_unite_response
-from pyunitelway.errors import (NoPollingWindow, NoUniteResponse, UnexpectedDataLength, UnexpectedUniteResponse,
-                                UniteRequestFailed, WriteNotAllowed)
-from pyunitelway.num_constants import (Action, CYCLE_IN_PROGRESS, CYCLE_STOPPED, EXTRACTION_HOOD, LONG_WORKPIECE, OBJECT_SPEC, PLC_ALL_MODULES, VACUUM_PUMP,
-                                       WIDE_WORKPIECE, FileType, Mode, Object, program_index)
+from pyunitelway.errors import (NoPollingWindow, NoUniteResponse, ProgramNotVerified, ProgramRefused, UnexpectedDataLength,
+                                UnexpectedUniteResponse, UniteRequestFailed, WriteNotAllowed)
+from pyunitelway.num_constants import (Action, CYCLE_IN_PROGRESS, CYCLE_STOPPED, EXTRACTION_HOOD, IMA_PROGRAM_NUMBERS, LONG_WORKPIECE,
+                                       OBJECT_SPEC, PLC_ALL_MODULES, PROGRAM_NUMBER_MAX, VACUUM_PUMP, WIDE_WORKPIECE, FileType, Mode,
+                                       Object, program_index)
 from pyunitelway.unite_responses import (
     check_file_status,
     decode_object,
     ladder_variable_name,
     parse_available_bytes_in_ram,
+    parse_delete_file,
     parse_directory,
+    parse_download_close,
+    parse_download_open,
+    parse_download_segment,
     parse_ladder_read_response,
     parse_ladder_variable,
     parse_mirror_result,
@@ -33,6 +38,7 @@ from pyunitelway.unite_responses import (
 from pyunitelway.utils import (
     check_specific_answer,
     compute_bcc,
+    download_segments,
     duplicate_dle,
     encode_ladder_value,
     encode_object,
@@ -41,6 +47,7 @@ from pyunitelway.utils import (
     get_response_code,
     is_valid_response_code,
     ladder_specific_byte,
+    program_blocks,
 )
 
 log = logging.getLogger(__name__)
@@ -808,3 +815,126 @@ class UnitelwayClient:
         resp = self.run_unite(self.link_address, query, text="CLOSE_DIRECTORY")
         check_specific_answer(resp, CLOSE_DIRECTORY)
         return check_file_status("CLOSE_DIRECTORY", resp[2], (0, 4)) == 0
+
+    # ------- download (938914 §4.12): part programmes only, todo.md K -------
+
+    def write_program(self, number, text, group=0, timeout=TIMEOUT_SEC):
+        """Store a part programme ``%number.group`` in the NC RAM: Open-Download-Sequence, Write-Download-Segment ×n,
+        Close-Download-Sequence (938914 §4.12), then read it back. **Live.** Verified 2026-09-26 (todo.md K): `%7778.0`
+        in one segment and `%7779.0` in three, each read back byte for byte; an existing number answers status 1.
+
+        The only download this library makes. The file type is part programme for storage (H'12'); machine parameters,
+        the PLC, macros, axis calibration and drip feed are not reachable from here. Refused before anything is sent:
+        the lock (``Action.WRITE_PROGRAM``), a number in ``IMA_PROGRAM_NUMBERS`` or above ``PROGRAM_NUMBER_MAX``, a text
+        the NC would reject (``program_blocks``), a running programme or EDIT mode, the active programme ``%R1A.W``, a
+        number the directory already lists (nothing is ever overwritten), too little free RAM. The NC's own status 1
+        "file already exists" is the second line of defence. Whole blocks per segment, the echoed segment number is
+        checked, the close goes out on every exit; afterwards the directory must list the programme and
+        :meth:`read_program` must return the bytes that were sent.
+
+        :param int number: Programme number, 1 to ``PROGRAM_NUMBER_MAX``
+        :param text: The programme body without its ``%`` line: ``str`` (line ends normalised) or ``bytes`` (as is)
+        :param int group: Axis group, 0 on this machine
+        :param float timeout: Answer wait per attempt
+        :returns: The programme's size as the directory lists it afterwards
+        :rtype: int
+        :raises WriteNotAllowed: ``Action.WRITE_PROGRAM`` not unlocked on this client
+        :raises ValueError: Text the NC would reject or store wrong
+        :raises ProgramRefused: A client-side check failed; nothing was sent
+        :raises FileTransferError: The NC answered a status other than 0 (close 11 = it deleted the file)
+        :raises ProgramNotVerified: Stored, but the directory or the read-back does not match
+        """
+        if Action.WRITE_PROGRAM not in self.writable:
+            raise WriteNotAllowed(Action.WRITE_PROGRAM, self.writable)
+        name = f"%{number}.{group}"
+        if not 1 <= number <= PROGRAM_NUMBER_MAX or number in IMA_PROGRAM_NUMBERS:
+            raise ProgramRefused(name, f"IMA's programmes and %{PROGRAM_NUMBER_MAX + 1} upward are never written")
+        index = program_index(number, group)
+        blocks = program_blocks(text)
+        data = b"".join(blocks)
+        segments = download_segments(blocks)
+        status = self.get_unit_status()
+        mode, running = status["nc_mode"], status["nc_status"]["active_program"]
+        if running or mode is Mode.EDIT:
+            raise ProgramRefused(name, f"NC not idle (programme running={running}, mode={mode.name})")
+        if status["current_program_number"] == number:
+            raise ProgramRefused(name, "it is the active programme (%R1A.W PROGCOUR)")
+        if index in {program_index(p.number, p.group) for p in self.read_directory()}:
+            raise ProgramRefused(name, "already in the NC RAM, nothing is overwritten")
+        free = self.get_available_bytes_in_ram()
+        if free < len(data) + 128:
+            raise ProgramRefused(name, f"{free} bytes free, {len(data) + 128} needed (938914 §4.12.1 status 3)")
+        log.info("write_program %s: %d blocks, %d bytes in %d segment(s)", name, len(blocks), len(data), len(segments))
+        query = [OPEN_DOWNLOAD, self.category_code] + file_identification(FileType.PART_PROGRAM, index)
+        resp = self._answer(OPEN_DOWNLOAD, self.run_unite(self.link_address, query, timeout, text=f"OPEN_DOWNLOAD {name}"))
+        parse_download_open(resp)
+        try:
+            for n, segment in enumerate(segments, 1):
+                query = [WRITE_DOWNLOAD, self.category_code, *n.to_bytes(2, "little"), *len(segment).to_bytes(2, "little"), *segment]
+                resp = self._answer(WRITE_DOWNLOAD, self.run_unite(self.link_address, query, timeout, text=f"WRITE_DOWNLOAD {name} #{n}"))
+                parse_download_segment(resp, n)
+        finally:
+            self.close_download(timeout)
+        listed = {program_index(p.number, p.group): p.size for p in self.read_directory()}
+        if index not in listed:
+            raise ProgramNotVerified(name, "not in the directory after the close")
+        back = self.read_program(number, group, timeout)
+        if back != data:
+            raise ProgramNotVerified(name, f"read back {len(back)} bytes, sent {len(data)}")
+        log.info("write_program %s: stored and read back, %d bytes in the directory", name, listed[index])
+        return listed[index]
+
+    def close_download(self, timeout=TIMEOUT_SEC):
+        """Close-Download-Sequence (938914 §4.12.3); status 4 "no file being downloaded" is accepted.
+
+        :returns: ``True`` if a file was open
+        :rtype: bool
+        :raises FileTransferError: Status 11 (the NC deleted the file: last block without LF) or another rejection
+        """
+        query = [CLOSE_DOWNLOAD, self.category_code]
+        resp = self._answer(CLOSE_DOWNLOAD, self.run_unite(self.link_address, query, timeout, text="CLOSE_DOWNLOAD"))
+        return parse_download_close(resp) == 0
+
+    def delete_program(self, number, group=0, timeout=TIMEOUT_SEC):
+        """Delete the part programme ``%number.group`` from the NC RAM: Delete-File (938914 §4.14, ``F5/46``).
+        **Live.** Verified 2026-09-26: the empty ``%7777.0`` answered ``F5 76 00`` and left the directory.
+
+        Part programmes only (type H'12'); PLC files are not reachable from here. Refused before anything is sent:
+        the lock (``Action.DELETE_PROGRAM``), a number in ``IMA_PROGRAM_NUMBERS`` or above ``PROGRAM_NUMBER_MAX``, a
+        running programme or EDIT mode, the active programme ``%R1A.W``, a number a fresh directory read does not list.
+        Afterwards the directory must not list it any more.
+
+        :param int number: Programme number, 1 to ``PROGRAM_NUMBER_MAX``
+        :param int group: Axis group, 0 on this machine
+        :param float timeout: Answer wait per attempt
+        :returns: The size the directory listed before the deletion
+        :rtype: int
+        :raises WriteNotAllowed: ``Action.DELETE_PROGRAM`` not unlocked on this client
+        :raises ProgramRefused: A client-side check failed; nothing was sent
+        :raises FileTransferError: The NC answered a status other than 0
+        :raises ProgramNotVerified: Status 0, but the directory still lists the programme
+        """
+        if Action.DELETE_PROGRAM not in self.writable:
+            raise WriteNotAllowed(Action.DELETE_PROGRAM, self.writable)
+        name = f"%{number}.{group}"
+        if not 1 <= number <= PROGRAM_NUMBER_MAX or number in IMA_PROGRAM_NUMBERS:
+            raise ProgramRefused(name, f"IMA's programmes and %{PROGRAM_NUMBER_MAX + 1} upward are never deleted")
+        index = program_index(number, group)
+        status = self.get_unit_status()
+        mode, running = status["nc_mode"], status["nc_status"]["active_program"]
+        if running or mode is Mode.EDIT:
+            raise ProgramRefused(name, f"NC not idle (programme running={running}, mode={mode.name})")
+        if status["current_program_number"] == number:
+            raise ProgramRefused(name, "it is the active programme (%R1A.W PROGCOUR)")
+        listed = {program_index(p.number, p.group): p.size for p in self.read_directory()}
+        if index not in listed:
+            raise ProgramRefused(name, "not in the NC RAM")
+        log.info("delete_program %s: %d bytes in the directory", name, listed[index])
+        query = [SPECIFIC_REQUEST, self.category_code, DELETE_FILE] + file_identification(FileType.PART_PROGRAM, index)[:4]
+        resp = self.run_unite(self.link_address, query, timeout, text=f"DELETE_FILE {name}")
+        check_specific_answer(resp, DELETE_FILE)
+        parse_delete_file(resp)
+        if index in {program_index(p.number, p.group) for p in self.read_directory()}:
+            raise ProgramNotVerified(name, "still in the directory after status 0")
+        log.info("delete_program %s: gone from the directory", name)
+        return listed[index]

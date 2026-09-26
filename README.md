@@ -25,7 +25,12 @@ File reading (938914 §4.13/§4.16), verified on the machine 2026-09-26: `read_d
 the NC RAM (48, in four answers); `read_program`, `read_machine_parameters`, `read_plc_archive` (and `read_macros`,
 the resident-macro areas, and `read_axis_calibration`, both verified 2026-09-26 and empty on this machine) upload one file as bytes
 (open, segments of up to 122 bytes, close in every case; `%101`/`%35` byte-identical to the 2023 NCDat backup, the
-parameters `.xpa` and the 111 KB ladder archive read without a resend). No download, no Delete-File.
+parameters `.xpa` and the 111 KB ladder archive read without a resend). Download (938914 §4.12): `write_program(number,
+text)` stores one part programme (verified 2026-09-26: `%7778.0` in one segment, `%7779.0` in three, each read back byte
+for byte) — the only download in the library, locked behind
+`Action.WRITE_PROGRAM`, refusing IMA's programme numbers, anything the directory lists, the active programme, a busy NC
+and bad text before a byte goes out, and reading the file back afterwards. `delete_program(number)` (Delete-File,
+938914 §4.14) removes one part programme behind `Action.DELETE_PROGRAM` with the same refusals (verified 2026-09-26).
 
 ## Usage
 

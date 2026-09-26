@@ -10,7 +10,7 @@ ENQ = 0x05
 ACK = 0x06
 NAK = 0x15
 
-# UNI-TE request codes (938914 §3.5); the download requests and CLEAR_CPT are not implemented
+# UNI-TE request codes (938914 §3.5); drip-feed download (type H'0C'), Init and CLEAR_CPT are not implemented
 READ_OBJECTS = 0x36
 WRITE_OBJECTS = 0x37
 UNSOLICITED_DATA = 0xFC
@@ -71,6 +71,47 @@ FILE_STATUS = {
     21: "error in filename",
     25: "sequence error",
     28: "system error",
+}
+
+# Download status bytes per request (938914 §4.12.1-§4.12.3); only 0 goes on, close 4 = nothing was open
+DOWNLOAD_STATUS = {
+    "OPEN_DOWNLOAD": {
+        0: "request executed",
+        1: "file already exists",
+        2: "other programme being downloaded or edited",
+        3: "free memory space less than 128 bytes",
+        10: "the NC is not in reset state (drip feed)",
+        11: "programme number incoherent or PPP buffer size incorrect",
+        21: "file type not recognised",
+        28: "system error",
+    },
+    "WRITE_DOWNLOAD": {
+        0: "request executed",
+        3: "memory full",
+        4: "no file being downloaded",
+        7: "ring buffer full (drip feed)",
+        9: "data length error",
+        10: "NC no longer in drip feed mode",
+        11: "a block has more than 120 characters, data incoherent",
+        20: "other programme being downloaded, sender error",
+        25: "sequence error",
+        28: "system error",
+    },
+    "CLOSE_DOWNLOAD": {
+        0: "request executed",
+        4: "no file being downloaded",
+        11: "file deleted: the last block loaded did not end with LF",
+        20: "other file being downloaded, sender error",
+        28: "system error",
+    },
+}
+
+# Delete-File status byte (938914 §4.14): F5 / 76 / status
+DELETE_STATUS = {
+    0: "request executed",
+    2: "request rejected, operation in the programme area",
+    5: "request rejected, no such file",
+    10: "request rejected, programme or subroutine being executed, PLC status incompatible with file deletion",
 }
 
 # Response codes

@@ -59,8 +59,10 @@ def main():
     # client.read_program(programs[0].number, programs[0].group)  # bytes as stored, CRLF line ends
     # client.read_machine_parameters()               # the .xpa text
     # client.read_plc_archive()                    # all ladder and C modules, 111 KB, about 3 minutes
-    # client.read_macros(timeout=10)               # file type H'03', unverified: todo.md J step 1
-    # client.read_axis_calibration(timeout=10)     # file type H'02', unverified: todo.md J step 2
+    # client.read_macros(timeout=10)               # file type H'03', verified 2026-09-26
+    # client.read_axis_calibration(timeout=10)     # file type H'02', verified 2026-09-26
+    # client.write_program(7781, "N10 G4 F1\nN20 M2\n")  # writable={Action.WRITE_PROGRAM}: stores a part programme (verified 2026-09-26); the number must be new
+    # client.delete_program(7781)                  # writable={Action.DELETE_PROGRAM}: Delete-File, IMA's numbers and %9000+ refused
 
     # writes: each needs its entry in writable=
     # mode = client.read_mode()

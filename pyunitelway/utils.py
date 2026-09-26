@@ -385,3 +385,55 @@ def read_int(data):
     :rtype: int
     """
     return int.from_bytes(data, byteorder='little')
+
+
+def program_blocks(text):
+    """Split a part programme into blocks for Write-Download-Segment and refuse what the NC would refuse or store wrong
+    (938914 §4.12.2-§4.12.3): printable ASCII only, every block ends with CR LF, no block over 120 characters, no empty
+    block, no ``%`` header line (the number comes from the file identification). A ``str`` is normalised to CR LF line
+    ends; ``bytes`` are taken as they are (a backup file, byte for byte).
+
+    :returns: The blocks, each with its CR LF
+    :rtype: list[bytes]
+    :raises ValueError: Anything the NC would reject, or that would end in a deleted or wrong file
+    """
+    if isinstance(text, str):
+        try:
+            data = text.replace("\r\n", "\n").replace("\n", "\r\n").encode("ascii")
+        except UnicodeEncodeError as e:
+            raise ValueError(f"not ASCII: {e}") from None
+    else:
+        data = bytes(text)
+    if not data:
+        raise ValueError("empty programme")
+    if not data.endswith(b"\r\n"):
+        raise ValueError("the last block must end with CR LF, else Close-Download-Sequence deletes the file (938914 §4.12.3)")
+    blocks = [block + b"\r\n" for block in data[:-2].split(b"\r\n")]
+    for n, block in enumerate(blocks, 1):
+        body = block[:-2]
+        if not body:
+            raise ValueError(f"block {n} is empty")
+        if any(not 0x20 <= byte <= 0x7E for byte in body):
+            raise ValueError(f"block {n} has a byte outside printable ASCII")
+        if len(body) > 120:
+            raise ValueError(f"block {n} has {len(body)} characters, the NC takes 120 (938914 §4.12.2)")
+        if body.startswith(b"%"):
+            raise ValueError(f"block {n} is a %-header line; the programme number comes from the file identification")
+    return blocks
+
+
+def download_segments(blocks, limit=122):
+    """Pack whole blocks into segments of at most ``limit`` bytes (938914 §4.12.2: 122 data bytes per request), so a
+    sequence error can only cut between blocks.
+
+    :rtype: list[bytes]
+    """
+    segments, current = [], b""
+    for block in blocks:
+        if len(current) + len(block) > limit:
+            segments.append(current)
+            current = b""
+        current += block
+    if current:
+        segments.append(current)
+    return segments

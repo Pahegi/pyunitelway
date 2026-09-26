@@ -1,4 +1,4 @@
-from pyunitelway.constants import FILE_STATUS, LADDER_REQUEST
+from pyunitelway.constants import DELETE_STATUS, DOWNLOAD_STATUS, FILE_STATUS, LADDER_REQUEST
 from pyunitelway.errors import (
     FileTransferError,
     OperationInProgrammeArea,
@@ -451,3 +451,55 @@ def parse_directory(response, request):
         index, size = read_dword(r), read_dword(r)
         programs.append(Program.from_index(index, size))
     return status, programs
+
+
+def check_download_status(request, status, accepted=(0,)):
+    """Raise ``FileTransferError`` unless ``status`` is one of ``accepted`` (938914 §4.12, ``DOWNLOAD_STATUS``)."""
+    if status not in accepted:
+        raise FileTransferError(request, status, DOWNLOAD_STATUS[request].get(status, "undocumented status"))
+    return status
+
+
+def parse_download_open(response):
+    """Parse ``6A / status`` (938914 §4.12.1); only status 0 opened the file (1 = it exists, nothing is overwritten).
+
+    :returns: 0
+    :raises FileTransferError: Any other status
+    """
+    return check_download_status("OPEN_DOWNLOAD", response[1])
+
+
+def parse_download_segment(response, number):
+    """Parse ``6B / status / segment`` (938914 §4.12.2).
+
+    :param int number: Segment number that was sent
+    :returns: 0
+    :raises FileTransferError: Other status, or the answer echoes another segment number
+    """
+    r = list(response[1:])
+    status = check_download_status("WRITE_DOWNLOAD", read_byte(r))
+    answered = read_word(r)
+    if answered != number:
+        raise FileTransferError("WRITE_DOWNLOAD", status, f"segment {answered} answered, {number} sent")
+    return status
+
+
+def parse_download_close(response):
+    """Parse ``6C / status`` (938914 §4.12.3): 0 = stored, 4 = nothing was open; 11 = the NC deleted the file.
+
+    :returns: 0 or 4
+    :raises FileTransferError: 11 and every other status
+    """
+    return check_download_status("CLOSE_DOWNLOAD", response[1], (0, 4))
+
+
+def parse_delete_file(response):
+    """Parse ``F5 / 76 / status`` (938914 §4.14) after ``check_specific_answer``; only status 0 deleted the file.
+
+    :returns: 0
+    :raises FileTransferError: 2 (operation in the programme area), 5 (no such file), 10 (programme executing)
+    """
+    status = response[2]
+    if status != 0:
+        raise FileTransferError("DELETE_FILE", status, DELETE_STATUS.get(status, "undocumented status"))
+    return status
