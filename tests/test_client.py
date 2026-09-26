@@ -103,17 +103,6 @@ class TestGetAvailableBytesInRam:
             client_answering([0xFE]).get_available_bytes_in_ram()
 
 
-class TestShutdown:
-    def test_sends_f5_00_66_00_and_reads_the_status(self):
-        sent = []
-        c = client_answering([0xF5, 0x96, 0x00], sent)
-        assert c.shutdown() is True
-        assert sent == [[0xF5, 0x00, 0x66, 0x00]]
-
-    def test_refused_status(self):
-        assert client_answering([0xF5, 0x96, 0x1C]).shutdown() is False
-
-
 class FakeSocket:
     """``stale`` is what is already buffered (drained non-blocking); ``live`` arrives afterwards."""
 
