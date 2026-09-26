@@ -17,11 +17,7 @@ python = "~3.12"
 pytest = "^7.0"
 
 [tool.poetry.scripts]
-debug_server = "example.debug_server:main"
 test = "example.test:main"
 listen = "example.listen:main"
 panel = "example.panel:main"
-write_checks = "example.write_checks:main"
-write_experiments = "example.write_experiments:main"
 backup = "example.backup:main"
-cycle_start = "example.cycle_start:main"

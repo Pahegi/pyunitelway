@@ -92,6 +92,7 @@ class Action(IntEnum):
     """Requests that make the machine act and are locked like writes (``UnitelwayClient(writable={Action.CYCLE_START})``).
     On purpose outside ``ALL_NC_OBJECTS`` and ``ALL_LADDER_SEGMENTS``."""
     CYCLE_START = 0x24  # UNI-TE Run (938914 §4.9): CYCLE START in the current mode, past the ladder's start memory
+    FEED_STOP = 0x25  # UNI-TE Stop (938914 §4.10): FEED STOP on the axes, spindles unaffected; never sent
 
 
 class ObjectSpec(NamedTuple):
@@ -141,6 +142,7 @@ VACUUM_PUMP = "%Q0700.6"  # QK_VakpEin__ "KR Vakuumpumpe einschalten": pump cont
 EXTRACTION_HOOD = "%Q0100.3"  # QLBABFSAKT "Absaugung Frässpindel": on = hood lifted per M200-M203 (%SP43/04), off = hood down
 LONG_WORKPIECE = "%Q0100.4"  # QLBL_WKEIN "Langes Werkstück": long-part clamping, stops, E40028 (%SP30/00, /03)
 WIDE_WORKPIECE = "%Q0101.4"  # QLBB_WKEIN "Überbreites Werkstück": key %I0102.4, %SP44/01; magazine side in %SP44/02-03
+CYCLE_IN_PROGRESS = "%R3.2"  # E_CYCLE "Cycle in progress" (938846 §3.8.1); 2026-09-26: 1 for 1.9 s during a G4 F2 dwell
 NC_START = "%W3.2"  # AZYKLUS = C_CYCLE "CYCLE START pulse" (938846 §3.8.2): %SP11/03 coil; a direct write skips the start memory
 
 

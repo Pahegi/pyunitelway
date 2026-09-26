@@ -69,8 +69,9 @@ class NoUniteResponse(UnitelwayError):
 
 class WriteNotAllowed(UnitelwayError):
     def __init__(self, target, allowed):
-        name = getattr(target, "name", target)
-        super().__init__(f"{name} is locked; unlock it with UnitelwayClient(writable={{{name!r}, ...}})")
+        # enums print as Action.CYCLE_START / Object.MODE_SELECTION (the string form does not unlock them); variables as '%W16.B'
+        shown = f"{type(target).__name__}.{target.name}" if hasattr(target, "name") else repr(target)
+        super().__init__(f"{shown} is locked; unlock it with UnitelwayClient(writable={{{shown}, ...}})")
 
 
 class FileTransferError(UnitelwayError):

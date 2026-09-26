@@ -477,6 +477,13 @@ class TestEncodeLadderValueRejectsNonIntegers:
 class TestCycleStart:
     # 938914 §4.9: Run = 24 / category 0; FE = cycle started, FD = NC status incompatible with a cycle start
 
+    def test_read_cycle_in_progress(self):
+        # example/logs/cycle-start-20260926-183212: 36 00 A4 02 03 00 01 00 -> 66 02 80 while the G4 F2 dwell ran
+        sent = []
+        assert client_answering([0x66, 0x02, 0x80], sent).read_cycle_in_progress() is True
+        assert client_answering([0x66, 0x02, 0x00]).read_cycle_in_progress() is False
+        assert sent == [[0x36, 0x00, 0xA4, 0x02, 0x03, 0x00, 0x01, 0x00]]
+
     def test_frame_and_positive_answer(self):
         sent = []
         c = client_answering([0xFE], sent, writable={Action.CYCLE_START})
@@ -501,3 +508,30 @@ class TestCycleStart:
             with pytest.raises(WriteNotAllowed):
                 client_answering([0xFE], sent, **kwargs).cycle_start()
             assert sent == []
+
+
+class TestFeedStop:
+    # 938914 §4.10: Stop = 25 / category 0; FE = feed stopped, FD = NC status incompatible with feed stop. Never sent.
+
+    def test_frame_and_answers(self):
+        sent = []
+        assert client_answering([0xFE], sent, writable={Action.FEED_STOP}).feed_stop() is True
+        assert client_answering([0xFD], writable={Action.FEED_STOP}).feed_stop() is False
+        assert sent == [[0x25, 0x00]]
+
+    def test_locked_and_not_opened_by_cycle_start(self):
+        for kwargs in ({}, {"writable": {Action.CYCLE_START}}, {"writable": ALL_NC_OBJECTS | ALL_LADDER_SEGMENTS}):
+            sent = []
+            with pytest.raises(WriteNotAllowed):
+                client_answering([0xFE], sent, **kwargs).feed_stop()
+            assert sent == []
+
+
+class TestWriteNotAllowedMessage:
+    def test_names_the_enum_form_and_the_variable_form(self):
+        with pytest.raises(WriteNotAllowed, match=r"Action\.CYCLE_START"):
+            client_answering([0xFE]).cycle_start()
+        with pytest.raises(WriteNotAllowed, match=r"Object\.MODE_SELECTION"):
+            client_answering([0xFE]).write_mode(Mode.MDI)
+        with pytest.raises(WriteNotAllowed, match=r"'%Q700\.6'"):  # the normalised name, no leading zero
+            client_answering([0xFE]).write_vacuum_pump(True)

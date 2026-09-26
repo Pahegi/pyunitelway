@@ -11,7 +11,7 @@ from pyunitelway.constants import *
 from pyunitelway.conversion import unwrap_unite_response
 from pyunitelway.errors import (NoPollingWindow, NoUniteResponse, UnexpectedDataLength, UnexpectedUniteResponse,
                                 UniteRequestFailed, WriteNotAllowed)
-from pyunitelway.num_constants import (Action, EXTRACTION_HOOD, LONG_WORKPIECE, OBJECT_SPEC, PLC_ALL_MODULES, VACUUM_PUMP,
+from pyunitelway.num_constants import (Action, CYCLE_IN_PROGRESS, EXTRACTION_HOOD, LONG_WORKPIECE, OBJECT_SPEC, PLC_ALL_MODULES, VACUUM_PUMP,
                                        WIDE_WORKPIECE, FileType, Mode, Object, program_index)
 from pyunitelway.unite_responses import (
     check_file_status,
@@ -379,6 +379,34 @@ class UnitelwayClient:
         """
         return self.write_object(Object.MODE_SELECTION, Mode(mode))
 
+    def _nc_request(self, action, code, text, refusal):
+        """A bare NC request ``code / category`` (938914 §4.9-4.10), locked like a write.
+
+        :returns: ``True`` on ``0xFE``, ``False`` on the ``0xFD`` refusal
+        :raises WriteNotAllowed: ``action`` not unlocked on this client
+        """
+        if action not in self.writable:
+            raise WriteNotAllowed(action, self.writable)
+        try:
+            resp = self.run_unite(self.link_address, [code, self.category_code], text=text)
+        except UniteRequestFailed:
+            resp = [0xFD]
+        if resp[0] == 0xFD:
+            log.info("%s refused: %s", text, refusal)
+            return False
+        if not is_valid_response_code(code, resp[0]):
+            raise UnexpectedUniteResponse(get_response_code(code), resp[0])
+        return True
+
+    def read_cycle_in_progress(self):
+        """Is a cycle running? Reads ``%R3.2`` (``E_CYCLE`` "Cycle in progress", 938846 §3.8.1).
+
+        Verified 2026-09-26: 1 for 1.9 s while a ``G4 F2`` MDI block ran, 0 before and after.
+
+        :rtype: bool
+        """
+        return self.read_ladder(CYCLE_IN_PROGRESS)
+
     def cycle_start(self):
         """CYCLE START over the bus: the Run request (938914 §4.9). **Live - it starts the selected programme or the
         MDI block in the current mode.** Needs ``Action.CYCLE_START`` in ``writable``; ``ALL_NC_OBJECTS`` and
@@ -386,26 +414,25 @@ class UnitelwayClient:
 
         The request goes to the NC directly, past the ladder's start memory (``%SP11``: Not-Aus quittiert, mode,
         feed authorised, selected = active programme, valid work-list data, clamped workpiece side). What stays:
-        the NC's own state check - ``0xFD`` "NC status incompatible with a cycle start" - and the PLC's feed
-        authorisation ``%W4.0`` AUTAV on every movement. Verified 2026-09-26 in MDI (todo.md G): a ``G4 F2`` block ran
-        (``%R3.2`` E_CYCLE high for 1.9 s), a repeat on the consumed block answered ``0xFD``, ``G0 X2000`` moved the X axis.
+        the NC's own state check - ``0xFD`` "NC status incompatible with a cycle start", also the answer when the MDI
+        block was already consumed - and the PLC's feed authorisation ``%W4.0`` AUTAV on every movement. Verified
+        2026-09-26 in MDI (todo.md G): a ``G4 F2`` block ran (:meth:`read_cycle_in_progress` high for 1.9 s), a repeat
+        on the consumed block answered ``0xFD``, ``G0 X2000`` moved the X axis with the feed pot read 0 - only the block
+        or programme in the NC decides what a start does.
 
         :returns: ``True`` on ``0xFE``, ``False`` on the ``0xFD`` refusal
         :raises WriteNotAllowed: ``Action.CYCLE_START`` not unlocked on this client
         """
-        if Action.CYCLE_START not in self.writable:
-            raise WriteNotAllowed(Action.CYCLE_START, self.writable)
-        try:
-            resp = self.run_unite(self.link_address, [RUN, self.category_code], text="RUN")
-        except UniteRequestFailed:
-            log.info("RUN refused: NC status incompatible with a cycle start (938914 §4.9)")
-            return False
-        if resp[0] == 0xFD:
-            log.info("RUN refused: NC status incompatible with a cycle start (938914 §4.9)")
-            return False
-        if not is_valid_response_code(RUN, resp[0]):
-            raise UnexpectedUniteResponse(get_response_code(RUN), resp[0])
-        return True
+        return self._nc_request(Action.CYCLE_START, RUN, "RUN", "NC status incompatible with a cycle start (938914 §4.9)")
+
+    def feed_stop(self):
+        """FEED STOP over the bus: the Stop request (938914 §4.10) - "stops axis feed, the spindles are not affected".
+        **Live**; needs ``Action.FEED_STOP`` in ``writable``. Never sent; not an emergency stop - that is the Not-Aus.
+
+        :returns: ``True`` on ``0xFE``, ``False`` on the ``0xFD`` refusal
+        :raises WriteNotAllowed: ``Action.FEED_STOP`` not unlocked on this client
+        """
+        return self._nc_request(Action.FEED_STOP, STOP, "STOP", "NC status incompatible with feed stop (938914 §4.10)")
 
     def read_vacuum_pump(self):
         """Is the vacuum pump contactor on? Reads ``%Q0700.6`` (``QK_VakpEin__``).

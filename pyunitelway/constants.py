@@ -27,6 +27,7 @@ OPEN_UPLOAD = 0x3D
 READ_UPLOAD = 0x3E
 CLOSE_UPLOAD = 0x3F
 RUN = 0x24  # 938914 §4.9: starts an NC cycle in the current mode (RUN_AUTOMATE below starts the PLC tasks instead)
+STOP = 0x25  # 938914 §4.10: FEED STOP, spindles unaffected (STOP_AUTOMATE below stops the PLC tasks instead)
 
 # NUM specific requests (938914 §3.6; 938928 §10.4): request H'F5' + additional request code,
 # answer H'F5' + additional answer code (= request code + 0x30), then status/data
@@ -89,6 +90,7 @@ RESPONSE_CODES = {
     READ_UPLOAD: 0x6E,
     CLOSE_UPLOAD: 0x6F,
     RUN: 0xFE,  # 0xFD = NC status incompatible with a cycle start
+    STOP: 0xFE,  # 0xFD = NC status incompatible with feed stop
     SPECIFIC_REQUEST: 0xF5,  # then check ADDITIONAL_ANSWER_CODES (utils.check_specific_answer)
 }
 

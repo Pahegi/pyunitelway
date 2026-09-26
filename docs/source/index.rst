@@ -29,7 +29,8 @@ Built the same way but not yet sent: ``write_extraction_hood`` (``%Q0100.3``, ``
 transfer slot is closed in every case - the ladder archive is the one type the NC does not close itself), driven by
 ``poetry run backup``. No download, no Delete-File.
 ``cycle_start`` (UNI-TE Run, 938914 §4.9: CYCLE START in the current mode, ``False`` on the NC's refusal) was
-verified 2026-09-26 in MDI: a ``G4 F2`` dwell ran, a ``G0 X2000`` block moved the machine. ``shutdown`` is untested.
+verified 2026-09-26 in MDI: a ``G4 F2`` dwell ran, a ``G0 X2000`` block moved the machine; ``read_cycle_in_progress``
+reads ``%R3.2`` E_CYCLE. ``feed_stop`` (UNI-TE Stop, 938914 §4.10, ``Action.FEED_STOP``) and ``shutdown`` are untested.
 
 Writes are locked by default: ``write_ladder``, ``write_object`` and ``write_mode`` raise ``WriteNotAllowed``
 unless ``UnitelwayClient(writable={...})`` named the ladder segment (``"%W"``, where ``%W3.2`` is NC start),
@@ -67,11 +68,11 @@ Quick start
     client.disconnect_socket()
 
 Scripts: ``poetry run listen`` receives only and lists the link addresses the master polls;
-``poetry run test`` runs every read request plus the mode round-trip and logs the wire bytes to
-``example/logs/``; ``poetry run panel`` renders the machine's operator panel (buttons, lamps, key
+``poetry run test`` is a minimal tour of every request (the mode round-trip, a scratch byte on unnamed ``%V``
+memory and a screen message are its only writes); ``poetry run panel`` renders the machine's operator panel (buttons, lamps, key
 switch, potentiometers) from ``%I0100``-``%I0104`` / ``%Q0100``-``%Q0102``, read-only, ``--watch 1``
-to refresh; ``poetry run backup`` reads the directory, part programmes, machine parameters or the ladder archive
-into ``example/backup/<timestamp>/`` (``--dry-run`` for a canned NC).
+to refresh; ``poetry run backup`` writes a full backup (every part programme, the machine parameters, the PLC
+archive) into ``example/backup/<timestamp>/`` (``--dry-run`` for a canned NC).
 
 Setup
 =====
