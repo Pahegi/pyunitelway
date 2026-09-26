@@ -10,7 +10,7 @@ ENQ = 0x05
 ACK = 0x06
 NAK = 0x15
 
-# UNI-TE request codes (938914 §3.5); file transfer and CLEAR_CPT are not implemented yet
+# UNI-TE request codes (938914 §3.5); the download requests and CLEAR_CPT are not implemented
 READ_OBJECTS = 0x36
 WRITE_OBJECTS = 0x37
 UNSOLICITED_DATA = 0xFC
@@ -24,8 +24,9 @@ OPEN_DOWNLOAD = 0x3A
 WRITE_DOWNLOAD = 0x3B
 CLOSE_DOWNLOAD = 0x3C
 OPEN_UPLOAD = 0x3D
-WRITE_UPLOAD = 0x3E
+READ_UPLOAD = 0x3E
 CLOSE_UPLOAD = 0x3F
+RUN = 0x24  # 938914 §4.9: starts an NC cycle in the current mode (RUN_AUTOMATE below starts the PLC tasks instead)
 
 # NUM specific requests (938914 §3.6; 938928 §10.4): request H'F5' + additional request code,
 # answer H'F5' + additional answer code (= request code + 0x30), then status/data
@@ -57,6 +58,20 @@ ADDITIONAL_ANSWER_CODES = {
     SHUTDOWN: 0x96,
 }
 
+# File transfer status byte (938914 §4.13, §4.16); 0 and 15 are the good ones
+FILE_STATUS = {
+    0: "request executed",
+    2: "other programme being uploaded or edited",
+    4: "no file open, or already closed",
+    5: "no such programme number",
+    9: "buffer too small",
+    15: "no more data, closed by the NC",
+    20: "other file being uploaded, sender error",
+    21: "error in filename",
+    25: "sequence error",
+    28: "system error",
+}
+
 # Response codes
 RESPONSE_CODES = {
     READ_OBJECTS: 0x66,
@@ -71,8 +86,9 @@ RESPONSE_CODES = {
     WRITE_DOWNLOAD: 0x6B,
     CLOSE_DOWNLOAD: 0x6C,
     OPEN_UPLOAD: 0x6D,
-    WRITE_UPLOAD: 0x6E,
+    READ_UPLOAD: 0x6E,
     CLOSE_UPLOAD: 0x6F,
+    RUN: 0xFE,  # 0xFD = NC status incompatible with a cycle start
     SPECIFIC_REQUEST: 0xF5,  # then check ADDITIONAL_ANSWER_CODES (utils.check_specific_answer)
 }
 

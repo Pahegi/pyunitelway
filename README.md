@@ -13,11 +13,18 @@ Verified on the machine (2026-09-22; the frames are regression vectors in `tests
 
 Verified live write: `write_mode` (segment 180, MANUAL and back to AUTO, read back over both
 `read_mode` and `%R16.B`); `write_ladder` (2026-09-23: MSG2 `%W16.B` written and restored, bit and word writes
-on unnamed `%V` memory, all read back); `write_message` (shown under E/A → Fehlermeldungen → Netz-Meldungen).
+on unnamed `%V` memory, all read back; `write_vacuum_pump(True/False)` = `%Q0700.6`, started and stopped the pump); `write_message`
+(shown under E/A → Fehlermeldungen → Netz-Meldungen). Same pattern, not yet sent: `write_extraction_hood`,
+`write_long_workpiece`, `write_wide_workpiece` (panel latches `%Q0100.3`, `%Q0100.4`, `%Q0101.4`).
 One lock for every write: nothing is writable unless
 `UnitelwayClient(writable={...})` names the ladder segment (`"%W"`), the variable (`"%W16.B"`) or the NC
 object (`Object.MODE_SELECTION`); `ALL_LADDER_SEGMENTS` / `ALL_NC_OBJECTS` open everything. `write_object` for the other families is
-unit-tested only. Not implemented: file transfer, directory requests.
+unit-tested only.
+
+File reading (938914 §4.13/§4.16), verified on the machine 2026-09-26: `read_directory` lists the part programmes in
+the NC RAM (48, in four answers); `read_program`, `read_machine_parameters`, `read_plc_archive` upload one file as bytes
+(open, segments of up to 122 bytes, close in every case; `%101`/`%35` byte-identical to the 2023 NCDat backup, the
+parameters `.xpa` and the 111 KB ladder archive read without a resend). No download, no Delete-File.
 
 ## Usage
 
@@ -40,6 +47,7 @@ poetry run test          # every read-only request + the mode round-trip, wire b
 poetry run panel         # the operator panel (buttons, lamps, key switch, pots) as the PLC sees it; --watch 1
 poetry run write_checks [--dry-run]       # MSG2 %W16.B write, read back, restore; then a screen message
 poetry run write_experiments [--dry-run] # bit and word writes on unnamed %V7800, read back, restore
+poetry run backup --directory | --program 101 35 | --parameters | --archive | --all [--dry-run]  # files out of the NC
 poetry run pytest        # spec and hardware vectors, no machine needed
 ```
 

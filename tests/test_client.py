@@ -29,7 +29,8 @@ from pyunitelway.errors import (
 )
 from pyunitelway.conversion import unwrap_unite_response
 from pyunitelway.constants import ALL_LADDER_SEGMENTS
-from pyunitelway.num_constants import ALL_NC_OBJECTS, Mode, Object
+from pyunitelway.num_constants import (ALL_NC_OBJECTS, EXTRACTION_HOOD, LONG_WORKPIECE, VACUUM_PUMP, WIDE_WORKPIECE, Action,
+                                       Mode, Object)
 from pyunitelway.utils import check_specific_answer, encode_ladder_value, is_valid_response_code
 
 import test_hardware_vectors as hv
@@ -39,14 +40,14 @@ from test_conversion import wire_frame
 MEMORY_FREE_ANSWER = [0xF5, 0x77, 0x00, 0xD0, 0x10, 0x01, 0x00]
 
 
-def client_answering(answer, sent=None, **kwargs):
-    """A client whose run_unite returns a canned UNI-TE answer and records the query."""
+def client_answering(answer, sent=None, run=None, **kwargs):
+    """A client whose run_unite returns a canned UNI-TE answer (or ``run()``'s) and records the query."""
     c = UnitelwayClient(**kwargs)
 
     def fake_run_unite(address, query, *args, **kwargs):
         if sent is not None:
             sent.append(list(query))
-        return list(answer)
+        return list(run() if run else answer)
 
     c.run_unite = fake_run_unite
     return c
@@ -325,6 +326,73 @@ class TestWriteLadder:
             c.write_ladder("%V0.B", 1)
 
 
+class TestVacuumPump:
+    # example/logs/test-20260923-154919 / -154926: 37 00 A9 06 00 07 01 00 01 started the pump, ... 00 stopped it
+    ON = [0x37, 0x00, 0xA9, 0x06, 0x00, 0x07, 0x01, 0x00, 0x01]
+    OFF = [0x37, 0x00, 0xA9, 0x06, 0x00, 0x07, 0x01, 0x00, 0x00]
+
+    def test_frames_as_sent_on_the_machine(self):
+        sent = []
+        c = client_answering([0xFE], sent, writable={VACUUM_PUMP})
+        assert c.write_vacuum_pump(True) is True
+        assert c.write_vacuum_pump(False) is True
+        assert sent == [self.ON, self.OFF]
+
+    def test_segment_lock_also_opens_it(self):
+        sent = []
+        c = client_answering([0xFE], sent, writable={"%Q"})
+        assert c.write_vacuum_pump(1) is True
+        assert sent == [self.ON]
+
+    def test_locked_by_default(self):
+        sent = []
+        c = client_answering([0xFE], sent)
+        with pytest.raises(WriteNotAllowed):
+            c.write_vacuum_pump(True)
+        assert sent == []
+
+    def test_read(self):
+        sent = []
+        assert client_answering([0x66, 0x06, 0x80], sent).read_vacuum_pump() is True  # a set bit answers 0x80
+        assert client_answering([0x66, 0x06, 0x00]).read_vacuum_pump() is False
+        assert sent == [[0x36, 0x00, 0xA9, 0x06, 0x00, 0x07, 0x01, 0x00]]
+
+
+class TestPanelLatches:
+    """Extraction hood, long and wide workpiece: panel lamp bits that are the state latch, written like the pump."""
+    CASES = [
+        # method suffix, constant, bit, address little-endian
+        ("extraction_hood", EXTRACTION_HOOD, 3, [0x00, 0x01]),  # %Q0100.3
+        ("long_workpiece", LONG_WORKPIECE, 4, [0x00, 0x01]),  # %Q0100.4
+        ("wide_workpiece", WIDE_WORKPIECE, 4, [0x01, 0x01]),  # %Q0101.4
+    ]
+
+    def test_write_frames(self):
+        for name, var, bit, addr in self.CASES:
+            sent = []
+            c = client_answering([0xFE], sent, writable={var})
+            assert getattr(c, f"write_{name}")(True) is True
+            assert getattr(c, f"write_{name}")(0) is True
+            head = [0x37, 0x00, 0xA9, bit] + addr + [0x01, 0x00]
+            assert sent == [head + [0x01], head + [0x00]], name
+
+    def test_read_frames_and_decode(self):
+        for name, var, bit, addr in self.CASES:
+            sent = []
+            assert getattr(client_answering([0x66, bit, 0x80], sent), f"read_{name}")() is True
+            assert getattr(client_answering([0x66, bit, 0x00]), f"read_{name}")() is False
+            assert sent == [[0x36, 0x00, 0xA9, bit] + addr + [0x01, 0x00]], name
+
+    def test_each_lock_opens_only_its_own_bit(self):
+        c = client_answering([0xFE], writable={EXTRACTION_HOOD})
+        assert c.write_extraction_hood(False) is True
+        for call in (c.write_long_workpiece, c.write_wide_workpiece, c.write_vacuum_pump):
+            with pytest.raises(WriteNotAllowed):
+                call(True)
+        c = client_answering([0xFE], writable={"%Q"})
+        assert c.write_long_workpiece(True) is True and c.write_wide_workpiece(True) is True
+
+
 class TestWriteMessage:
     def test_one_line_padded_to_32(self):
         sent = []
@@ -404,3 +472,32 @@ class TestEncodeLadderValueRejectsNonIntegers:
         for bad in (1.5, "1", None):
             with pytest.raises(ValueError):
                 c.write_ladder("%V0.B", bad)
+
+
+class TestCycleStart:
+    # 938914 §4.9: Run = 24 / category 0; FE = cycle started, FD = NC status incompatible with a cycle start
+
+    def test_frame_and_positive_answer(self):
+        sent = []
+        c = client_answering([0xFE], sent, writable={Action.CYCLE_START})
+        assert c.cycle_start() is True
+        assert sent == [[0x24, 0x00]]
+
+    def test_refusal_is_false_not_an_exception(self):
+        assert client_answering([0xFD], writable={Action.CYCLE_START}).cycle_start() is False
+
+        def refused():
+            raise UniteRequestFailed()  # what run_unite raises on a real 0xFD (conversion.unwrap_unite_response)
+
+        assert client_answering(None, run=refused, writable={Action.CYCLE_START}).cycle_start() is False
+
+    def test_unexpected_answer(self):
+        with pytest.raises(UnexpectedUniteResponse):
+            client_answering([0x66], writable={Action.CYCLE_START}).cycle_start()
+
+    def test_locked_by_default_and_not_opened_by_the_all_sets(self):
+        for kwargs in ({}, {"writable": ALL_NC_OBJECTS}, {"writable": ALL_LADDER_SEGMENTS}):
+            sent = []
+            with pytest.raises(WriteNotAllowed):
+                client_answering([0xFE], sent, **kwargs).cycle_start()
+            assert sent == []

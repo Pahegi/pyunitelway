@@ -20,14 +20,21 @@ Status: prototype. Verified on the machine on 2026-09-22 (the frames are regress
 Verified live write (2026-09-22): ``write_mode`` - MANUAL and back to AUTO, read back over ``read_mode``
 and ``%R16.B``. ``write_object`` for the other families and ``_write_objects`` are unit-tested only.
 Verified 2026-09-23: ``write_ladder`` (a ``%W`` byte written and restored; bit and word writes on unnamed
-``%V`` memory, each read back) and ``write_message`` (938914 §4.17; the NC lists it under E/A →
-Fehlermeldungen → Netz-Meldungen, no acknowledgement). Not implemented: file transfer and directory requests.
-``shutdown`` is untested.
+``%V`` memory, each read back), ``write_message`` (938914 §4.17; the NC lists it under E/A →
+Fehlermeldungen → Netz-Meldungen, no acknowledgement) and a ``%Q`` output: ``write_vacuum_pump(True)`` writes
+``%Q0700.6`` and starts the vacuum pump, ``False`` stops it (the coolant pump runs with it); ``read_vacuum_pump``.
+Built the same way but not yet sent: ``write_extraction_hood`` (``%Q0100.3``, ``False`` lowers the hood),
+``write_long_workpiece`` (``%Q0100.4``) and ``write_wide_workpiece`` (``%Q0101.4``), each with a ``read_`` twin. File reading (938914 §4.13/§4.16) verified on the machine 2026-09-26:
+``read_directory``, ``read_program``, ``read_machine_parameters``, ``read_plc_archive`` (bytes; the NC's single
+transfer slot is closed in every case - the ladder archive is the one type the NC does not close itself), driven by
+``poetry run backup``. No download, no Delete-File.
+``cycle_start`` (UNI-TE Run, 938914 §4.9: CYCLE START in the current mode, ``False`` on the NC's refusal) was
+verified 2026-09-26 in MDI: a ``G4 F2`` dwell ran, a ``G0 X2000`` block moved the machine. ``shutdown`` is untested.
 
 Writes are locked by default: ``write_ladder``, ``write_object`` and ``write_mode`` raise ``WriteNotAllowed``
 unless ``UnitelwayClient(writable={...})`` named the ladder segment (``"%W"``, where ``%W3.2`` is NC start),
 the variable (``"%W16.B"``) or the NC object (``Object.MODE_SELECTION``); ``ALL_LADDER_SEGMENTS`` and
-``ALL_NC_OBJECTS`` open everything.
+``ALL_NC_OBJECTS`` open everything except ``cycle_start``, which needs ``Action.CYCLE_START`` named explicitly.
 
 .. toctree::
    :maxdepth: 2
@@ -63,7 +70,8 @@ Scripts: ``poetry run listen`` receives only and lists the link addresses the ma
 ``poetry run test`` runs every read request plus the mode round-trip and logs the wire bytes to
 ``example/logs/``; ``poetry run panel`` renders the machine's operator panel (buttons, lamps, key
 switch, potentiometers) from ``%I0100``-``%I0104`` / ``%Q0100``-``%Q0102``, read-only, ``--watch 1``
-to refresh.
+to refresh; ``poetry run backup`` reads the directory, part programmes, machine parameters or the ladder archive
+into ``example/backup/<timestamp>/`` (``--dry-run`` for a canned NC).
 
 Setup
 =====

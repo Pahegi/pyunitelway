@@ -71,3 +71,9 @@ class WriteNotAllowed(UnitelwayError):
     def __init__(self, target, allowed):
         name = getattr(target, "name", target)
         super().__init__(f"{name} is locked; unlock it with UnitelwayClient(writable={{{name!r}, ...}})")
+
+
+class FileTransferError(UnitelwayError):
+    def __init__(self, request, status, meaning):
+        self.status = status
+        super().__init__(f"{request}: status {status}, {meaning}")

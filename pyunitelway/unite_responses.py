@@ -1,6 +1,12 @@
-from pyunitelway.constants import LADDER_REQUEST
-from pyunitelway.errors import UnexpectedAdditionalAwnserCode, OperationInProgrammeArea, UnexpectedObjectTypeResponse, UnexpectedDataLength
-from pyunitelway.num_constants import Mode, symbol_bounds, symbol_low_byte_max, ladder_size
+from pyunitelway.constants import FILE_STATUS, LADDER_REQUEST
+from pyunitelway.errors import (
+    FileTransferError,
+    OperationInProgrammeArea,
+    UnexpectedAdditionalAwnserCode,
+    UnexpectedDataLength,
+    UnexpectedObjectTypeResponse,
+)
+from pyunitelway.num_constants import Mode, Program, symbol_bounds, symbol_low_byte_max, ladder_size
 from pyunitelway.utils import read_byte, read_dword, read_word, read_bytes, read_int, ladder_specific_byte
 
 
@@ -392,3 +398,56 @@ def decode_object(spec, data):
     if spec.kind == "longs":
         return [int.from_bytes(bytes(data[i:i + 4]), "little", signed=True) for i in range(0, len(data), 4)]
     return list(data)
+
+
+def check_file_status(request, status, accepted=(0,)):
+    """Raise ``FileTransferError`` unless ``status`` is one of ``accepted`` (938914 §4.13, §4.16)."""
+    if status not in accepted:
+        raise FileTransferError(request, status, FILE_STATUS.get(status, "undocumented status"))
+    return status
+
+
+def parse_upload_segment(response, number):
+    """Parse ``6E / status / segment / length / data`` (938914 §4.13.2).
+
+    :param list[int] response: UNI-TE answer bytes, starting at the answer code
+    :param int number: Segment number that was asked for
+    :returns: (status, data) - status 0 = more data follows, 15 = last segment, file closed by the NC
+    :rtype: (int, bytes)
+    :raises FileTransferError: Other status, or the answer carries another segment number
+    :raises UnexpectedDataLength: Data does not match the announced length
+    """
+    r = list(response[1:])
+    status = check_file_status("READ_UPLOAD", read_byte(r), (0, 15))
+    answered = read_word(r)
+    if answered != number:
+        raise FileTransferError("READ_UPLOAD", status, f"segment {answered} answered, {number} asked")
+    length = read_word(r)
+    if len(r) != length:
+        raise UnexpectedDataLength(length, r)
+    return status, bytes(r)
+
+
+def parse_directory(response, request):
+    """Parse ``F5 / code / status / (index, size) long word pairs`` (938914 §4.16.1, §4.16.2).
+
+    :param list[int] response: UNI-TE answer bytes, starting at the answer code
+    :param str request: Request name for the error message
+    :returns: (status, programmes) - status 0 = more to read, 15 = list complete, closed by the NC
+    :rtype: (int, list[Program])
+    :raises OperationInProgrammeArea: Status 2
+    :raises FileTransferError: Status 9 "buffer too small" or another rejection
+    :raises UnexpectedDataLength: Data is not a whole number of pairs
+    """
+    r = list(response[2:])
+    status = read_byte(r)
+    if status == 2:
+        raise OperationInProgrammeArea()
+    check_file_status(request, status, (0, 15))
+    if len(r) % 8:
+        raise UnexpectedDataLength(len(r) - len(r) % 8, r)
+    programs = []
+    while r:
+        index, size = read_dword(r), read_dword(r)
+        programs.append(Program.from_index(index, size))
+    return status, programs

@@ -128,6 +128,18 @@ def encode_object(spec, value):
     return data
 
 
+def file_identification(file_type, identification=0):
+    """The two long words of Open-Upload-Sequence (938914 §4.13.1), little-endian.
+
+    Long word 1 carries the type in its high byte and the identification in the low three
+    (§4.13.4.1: ``H'120005B5'`` = part programme %146.1); long word 2 is not significant.
+    """
+    if not 0 <= identification <= 0xFFFFFF:
+        raise ValueError(f"identification 0x{identification:X} does not fit 3 bytes")
+    long1 = (int(file_type) << 24) | identification
+    return list(long1.to_bytes(4, "little")) + [0, 0, 0, 0]
+
+
 def check_specific_answer(response, additional_request, also_accept=()):
     """Validate the answer of a NUM specific request (938914 §3.6).
 

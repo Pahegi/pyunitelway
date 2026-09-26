@@ -9,12 +9,16 @@ import time
 
 from pyunitelway.constants import *
 from pyunitelway.conversion import unwrap_unite_response
-from pyunitelway.errors import NoPollingWindow, NoUniteResponse, UnexpectedDataLength, UnexpectedUniteResponse, WriteNotAllowed
-from pyunitelway.num_constants import OBJECT_SPEC, Mode, Object
+from pyunitelway.errors import (NoPollingWindow, NoUniteResponse, UnexpectedDataLength, UnexpectedUniteResponse,
+                                UniteRequestFailed, WriteNotAllowed)
+from pyunitelway.num_constants import (Action, EXTRACTION_HOOD, LONG_WORKPIECE, OBJECT_SPEC, PLC_ALL_MODULES, VACUUM_PUMP,
+                                       WIDE_WORKPIECE, FileType, Mode, Object, program_index)
 from pyunitelway.unite_responses import (
+    check_file_status,
     decode_object,
     ladder_variable_name,
     parse_available_bytes_in_ram,
+    parse_directory,
     parse_ladder_read_response,
     parse_ladder_variable,
     parse_mirror_result,
@@ -23,6 +27,7 @@ from pyunitelway.unite_responses import (
     parse_unit_fault_history,
     parse_unit_identification,
     parse_unit_status,
+    parse_upload_segment,
     parse_write_result,
 )
 from pyunitelway.utils import (
@@ -31,6 +36,7 @@ from pyunitelway.utils import (
     duplicate_dle,
     encode_ladder_value,
     encode_object,
+    file_identification,
     format_hex_list,
     get_response_code,
     is_valid_response_code,
@@ -70,7 +76,7 @@ class UnitelwayClient:
 
     @staticmethod
     def _writable_entry(entry):
-        if isinstance(entry, Object):
+        if isinstance(entry, (Object, Action)):
             return entry
         if isinstance(entry, str) and entry in LADDER_REQUEST:
             return entry
@@ -355,6 +361,8 @@ class UnitelwayClient:
             raise ValueError(f"{obj.name} is read-only (938914 §4.1.3)")
         return self._write_objects(obj, 0, address, 1, encode_object(spec, value))
 
+    # ------- this machine (IMA BIMA Quadroform C80/280) -------
+    
     def read_mode(self):
         """Current NC mode, segment 180.
 
@@ -370,6 +378,121 @@ class UnitelwayClient:
         :raises WriteNotAllowed: Segment 180 not unlocked on this client
         """
         return self.write_object(Object.MODE_SELECTION, Mode(mode))
+
+    def cycle_start(self):
+        """CYCLE START over the bus: the Run request (938914 §4.9). **Live - it starts the selected programme or the
+        MDI block in the current mode.** Needs ``Action.CYCLE_START`` in ``writable``; ``ALL_NC_OBJECTS`` and
+        ``ALL_LADDER_SEGMENTS`` do not include it.
+
+        The request goes to the NC directly, past the ladder's start memory (``%SP11``: Not-Aus quittiert, mode,
+        feed authorised, selected = active programme, valid work-list data, clamped workpiece side). What stays:
+        the NC's own state check - ``0xFD`` "NC status incompatible with a cycle start" - and the PLC's feed
+        authorisation ``%W4.0`` AUTAV on every movement. Verified 2026-09-26 in MDI (todo.md G): a ``G4 F2`` block ran
+        (``%R3.2`` E_CYCLE high for 1.9 s), a repeat on the consumed block answered ``0xFD``, ``G0 X2000`` moved the X axis.
+
+        :returns: ``True`` on ``0xFE``, ``False`` on the ``0xFD`` refusal
+        :raises WriteNotAllowed: ``Action.CYCLE_START`` not unlocked on this client
+        """
+        if Action.CYCLE_START not in self.writable:
+            raise WriteNotAllowed(Action.CYCLE_START, self.writable)
+        try:
+            resp = self.run_unite(self.link_address, [RUN, self.category_code], text="RUN")
+        except UniteRequestFailed:
+            log.info("RUN refused: NC status incompatible with a cycle start (938914 §4.9)")
+            return False
+        if resp[0] == 0xFD:
+            log.info("RUN refused: NC status incompatible with a cycle start (938914 §4.9)")
+            return False
+        if not is_valid_response_code(RUN, resp[0]):
+            raise UnexpectedUniteResponse(get_response_code(RUN), resp[0])
+        return True
+
+    def read_vacuum_pump(self):
+        """Is the vacuum pump contactor on? Reads ``%Q0700.6`` (``QK_VakpEin__``).
+
+        :rtype: bool
+        """
+        return self.read_ladder(VACUUM_PUMP)
+
+    def write_vacuum_pump(self, on):
+        """Switch the vacuum pump on or off. **Live**; needs ``"%Q0700.6"`` or ``"%Q"`` in ``writable``.
+
+        Writes ``%Q0700.6`` (``QK_VakpEin__`` "KR Vakuumpumpe einschalten"). The PLC only sets and resets that
+        output from the panel key in ``%SP24/00``, so the written value holds until the key is pressed. Verified
+        2026-09-23: ``True`` started the pump, ``False`` stopped it. The spindle coolant pump runs with it; the panel
+        lamp ``%Q0100.5`` is not touched.
+
+        :param bool on: ``True`` starts the pump, ``False`` stops it
+        :returns: ``True`` on the ``0xFE`` answer
+        :raises WriteNotAllowed: ``%Q0700.6`` not unlocked on this client
+        """
+        return self.write_ladder(VACUUM_PUMP, bool(on))
+
+    def read_extraction_hood(self):
+        """Is the "Absaugung Frässpindel" toggle on? Reads ``%Q0100.3`` (``QLBABFSAKT``, lamp = latch).
+
+        :rtype: bool
+        """
+        return self.read_ladder(EXTRACTION_HOOD)
+
+    def write_extraction_hood(self, on):
+        """Lift or lower the spindle extraction hood. **Live**; needs ``"%Q0100.3"`` or ``"%Q"`` in ``writable``.
+
+        Writes the panel latch ``%Q0100.3`` (``QLBABFSAKT`` "Absaugung Frässpindel"), toggled by key ``%I0103.3`` in
+        ``%SP43/01``. ``%SP43/04`` drives the lift valves ``%Q0800.2`` (50 mm) / ``%Q0800.3`` (160 mm) only while the
+        latch is on, from the height memory ``%V942.0/.1`` set by M200-M203. ``False`` therefore lowers the hood
+        fully; ``True`` lifts it to the last programmed height (nothing if that is M200). A tool change needs the
+        hood up (both end switches), else feed stop ``%V80.7``. Untested.
+
+        :param bool on: ``False`` = hood down, ``True`` = hood at the programmed height
+        :returns: ``True`` on the ``0xFE`` answer
+        :raises WriteNotAllowed: ``%Q0100.3`` not unlocked on this client
+        """
+        return self.write_ladder(EXTRACTION_HOOD, bool(on))
+
+    def read_long_workpiece(self):
+        """Is "Langes Werkstück" selected? Reads ``%Q0100.4`` (``QLBL_WKEIN``, lamp = latch).
+
+        :rtype: bool
+        """
+        return self.read_ladder(LONG_WORKPIECE)
+
+    def write_long_workpiece(self, on):
+        """Select or deselect long-workpiece mode (Langteil, X > 900 mm). **Live**; needs ``"%Q0100.4"`` or ``"%Q"``.
+
+        Writes ``%Q0100.4`` (``QLBL_WKEIN`` "Langes Werkstück"), toggled by key ``%I0103.4`` in ``%SP30/00``. Read by
+        34 networks: clamping uses both sides and the template valves, the stops lower on clamp (``%SP30/07``), the
+        tool magazine side follows it (``%SP44/02-03``), ``E40028`` mirrors it to the NC. A programme with
+        ``E30081 == 1`` (``VHM_LANGTEIL``) forces the latch from its M-function table. Fault 215 if a programme
+        needs it (``E30088`` 1 or 3) and it is off. Untested.
+
+        :param bool on: ``True`` selects, ``False`` deselects
+        :returns: ``True`` on the ``0xFE`` answer
+        :raises WriteNotAllowed: ``%Q0100.4`` not unlocked on this client
+        """
+        return self.write_ladder(LONG_WORKPIECE, bool(on))
+
+    def read_wide_workpiece(self):
+        """Is "Überbreites Teil" selected? Reads ``%Q0101.4`` (``QLBB_WKEIN``, lamp = latch).
+
+        :rtype: bool
+        """
+        return self.read_ladder(WIDE_WORKPIECE)
+
+    def write_wide_workpiece(self, on):
+        """Select or deselect wide-workpiece mode (Breitteil, Y > 800 mm). **Live**; needs ``"%Q0101.4"`` or ``"%Q"``.
+
+        Writes ``%Q0101.4`` (``QLBB_WKEIN`` "Überbreites Werkstück"), toggled by the unnamed key ``%I0102.4`` in
+        ``%SP44/01`` - the key only works outside a cycle, a direct write ignores that gate. With it on, the tool
+        magazine is driven to the side away from the machining side (``%SP44/02-03``, ``%Q0800.4/.5``) once a cycle
+        has set "Bearbeitung links/rechts". Fault 214 and feed stop ``%V82.4`` if a programme needs it (``E30088``
+        >= 2) and it is off; fault 198 if long and wide are both on with a tool change aborted. Untested.
+
+        :param bool on: ``True`` selects, ``False`` deselects
+        :returns: ``True`` on the ``0xFE`` answer
+        :raises WriteNotAllowed: ``%Q0101.4`` not unlocked on this client
+        """
+        return self.write_ladder(WIDE_WORKPIECE, bool(on))
 
     # ------- ladder variables (938914 §4.1.3.3, 938846 §15) -------
 
@@ -507,12 +630,117 @@ class UnitelwayClient:
         check_specific_answer(resp, WRITE_MESSAGE, also_accept=(0xFE,))
         return True
 
-    def shutdown(self):
-        """Shut down the PCNC PC module (938928 §10.4.10). **Untested; unknown whether a UC SII answers.**
+    # cannot be safely tested on a live machine, possibly dangerous
+    # def shutdown(self):
+    #     """Shut down the PCNC PC module (938928 §10.4.10). **Untested; unknown whether a UC SII answers.**
 
-        :returns: ``True`` if the status byte is ``0x00``
+    #     :returns: ``True`` if the status byte is ``0x00``
+    #     """
+    #     query = [SPECIFIC_REQUEST, self.category_code, SHUTDOWN, 0x00]
+    #     resp = self.run_unite(self.link_address, query, text="SHUTDOWN")
+    #     check_specific_answer(resp, SHUTDOWN)
+    #     return parse_shutdown_result(resp)
+
+    # ------- files (938914 §4.13, §4.16): read only - no download or delete request exists here -------
+
+    def _answer(self, request, resp):
+        """Raise unless ``resp`` carries the answer code of ``request``; return it."""
+        if not is_valid_response_code(request, resp[0]):
+            raise UnexpectedUniteResponse(get_response_code(request), resp[0])
+        return resp
+
+    def upload(self, file_type, identification=0, timeout=TIMEOUT_SEC):
+        """Read a file from the NC: Open-Upload-Sequence, Read-Upload-Segment ×n, Close-Upload-Sequence.
+
+        The NC has one transfer slot; the close goes out on every exit (the ladder archive is not auto-closed).
+        Verified on the machine 2026-09-26 for every file type.
+
+        :param FileType file_type: What to read
+        :param int identification: Low three bytes of the file id: programme index, ladder module
+        :param float timeout: Answer wait per attempt (a large archive may need more to open)
+        :returns: The file as the NC sends it, 122 bytes per segment
+        :rtype: bytes
+        :raises FileTransferError: A status other than 0/15, or a segment out of sequence
         """
-        query = [SPECIFIC_REQUEST, self.category_code, SHUTDOWN, 0x00]
-        resp = self.run_unite(self.link_address, query, text="SHUTDOWN")
-        check_specific_answer(resp, SHUTDOWN)
-        return parse_shutdown_result(resp)
+        name = f"{FileType(file_type).name} 0x{identification:06X}"
+        query = [OPEN_UPLOAD, self.category_code] + file_identification(file_type, identification)
+        resp = self._answer(OPEN_UPLOAD, self.run_unite(self.link_address, query, timeout, text=f"OPEN_UPLOAD {name}"))
+        status = check_file_status("OPEN_UPLOAD", resp[1], (0, 15))  # 15: programme empty
+        data = bytearray()
+        try:
+            number = 1
+            while status == 0:
+                query = [READ_UPLOAD, self.category_code, *number.to_bytes(2, "little")]
+                resp = self._answer(READ_UPLOAD, self.run_unite(self.link_address, query, timeout, text=f"READ_UPLOAD {name} #{number}"))
+                status, segment = parse_upload_segment(resp, number)
+                data += segment
+                number += 1
+        finally:
+            self.close_upload(timeout)
+        return bytes(data)
+
+    def close_upload(self, timeout=TIMEOUT_SEC):
+        """Close-Upload-Sequence (938914 §4.13.3); status 4 "already closed" is accepted.
+
+        :returns: ``True`` if a file was open
+        :rtype: bool
+        """
+        query = [CLOSE_UPLOAD, self.category_code]
+        resp = self._answer(CLOSE_UPLOAD, self.run_unite(self.link_address, query, timeout, text="CLOSE_UPLOAD"))
+        return check_file_status("CLOSE_UPLOAD", resp[1], (0, 4)) == 0
+
+    def read_program(self, number, group=0, timeout=TIMEOUT_SEC):
+        """Part programme ``%number.group`` (file type H'12'). Verified 2026-09-26.
+
+        :rtype: bytes
+        """
+        return self.upload(FileType.PART_PROGRAM, program_index(number, group), timeout)
+
+    def read_machine_parameters(self, timeout=TIMEOUT_SEC):
+        """Machine parameters (file type H'05'): the ``.xpa`` text the IPC's ``UPLF 5 0 0`` saves. Verified 2026-09-26.
+
+        :rtype: bytes
+        """
+        return self.upload(FileType.MACHINE_PARAMETERS, 0, timeout)
+
+    def read_plc_archive(self, timeout=TIMEOUT_SEC):
+        """All ladder and C modules (file type H'07', module type 16): the ``.xar`` of ``UPLF 7 16 0``. Verified 2026-09-26.
+
+        :rtype: bytes
+        """
+        return self.upload(FileType.PLC_LADDER, PLC_ALL_MODULES << 16, timeout)
+
+    def read_directory(self, start=0, group=0):
+        """Part programmes in the NC RAM from ``%start.group`` upward (938914 §4.16), 15 per answer. Verified 2026-09-26.
+
+        :returns: ``Program(number, group, size)`` in the NC's ascending order
+        :rtype: list[Program]
+        :raises OperationInProgrammeArea: Status 2, the NC is busy in the programme area
+        :raises FileTransferError: Status 9 "buffer too small" or another rejection
+        """
+        query = [SPECIFIC_REQUEST, self.category_code, OPEN_DIRECTORY, *program_index(start, group).to_bytes(4, "little")]
+        resp = self.run_unite(self.link_address, query, text=f"OPEN_DIRECTORY from %{start}.{group}")
+        check_specific_answer(resp, OPEN_DIRECTORY)
+        status, programs = parse_directory(resp, "OPEN_DIRECTORY")
+        try:
+            while status == 0:
+                query = [SPECIFIC_REQUEST, self.category_code, DIRECTORY]
+                resp = self.run_unite(self.link_address, query, text="DIRECTORY")
+                check_specific_answer(resp, DIRECTORY)
+                status, more = parse_directory(resp, "DIRECTORY")
+                programs += more
+        finally:
+            if status == 0:  # 15 = the NC closed it itself
+                self.close_directory()
+        return programs
+
+    def close_directory(self):
+        """Close-Directory (938914 §4.16.3); status 4 "already closed" is accepted.
+
+        :returns: ``True`` if a directory read was open
+        :rtype: bool
+        """
+        query = [SPECIFIC_REQUEST, self.category_code, CLOSE_DIRECTORY]
+        resp = self.run_unite(self.link_address, query, text="CLOSE_DIRECTORY")
+        check_specific_answer(resp, CLOSE_DIRECTORY)
+        return check_file_status("CLOSE_DIRECTORY", resp[2], (0, 4)) == 0

@@ -88,6 +88,12 @@ class Object(IntEnum):
 ALL_NC_OBJECTS = frozenset(Object)  # for UnitelwayClient(writable=...)
 
 
+class Action(IntEnum):
+    """Requests that make the machine act and are locked like writes (``UnitelwayClient(writable={Action.CYCLE_START})``).
+    On purpose outside ``ALL_NC_OBJECTS`` and ``ALL_LADDER_SEGMENTS``."""
+    CYCLE_START = 0x24  # UNI-TE Run (938914 §4.9): CYCLE START in the current mode, past the ladder's start memory
+
+
 class ObjectSpec(NamedTuple):
     size: int  # bytes per object
     writable: bool  # "accessible for write", 938914 §4.1.3
@@ -126,3 +132,48 @@ OBJECT_SPEC = {
     Object.CURRENT_PROGRAMME_NUMBER: ObjectSpec(2, True, "int"),
     Object.DATA_TRANSMITTED_TO_PROGRAMME_BEING_EXECUTED: ObjectSpec(4, True, "int"),
 }
+
+
+# ------- IMA BIMA Quadroform C80/280: ladder addresses of this machine (SPS.md, trace_signal.py) -------
+
+VACUUM_PUMP = "%Q0700.6"  # QK_VakpEin__ "KR Vakuumpumpe einschalten": pump contactor, latched by %SP24/00; verified 2026-09-23
+# The next three are panel lamps that double as the state latch (Set/Reset from the key, no cyclic coil), like the pump.
+EXTRACTION_HOOD = "%Q0100.3"  # QLBABFSAKT "Absaugung Frässpindel": on = hood lifted per M200-M203 (%SP43/04), off = hood down
+LONG_WORKPIECE = "%Q0100.4"  # QLBL_WKEIN "Langes Werkstück": long-part clamping, stops, E40028 (%SP30/00, /03)
+WIDE_WORKPIECE = "%Q0101.4"  # QLBB_WKEIN "Überbreites Werkstück": key %I0102.4, %SP44/01; magazine side in %SP44/02-03
+NC_START = "%W3.2"  # AZYKLUS = C_CYCLE "CYCLE START pulse" (938846 §3.8.2): %SP11/03 coil; a direct write skips the start memory
+
+
+class FileType(IntEnum):
+    """Upload file types (938914 §4.13.1): the high byte of the file identification."""
+    AXIS_CALIBRATION = 0x02
+    MACROS = 0x03
+    MACHINE_PARAMETERS = 0x05
+    PLC_ASSEMBLER = 0x06
+    PLC_LADDER = 0x07
+    PART_PROGRAM = 0x12
+
+
+PLC_ALL_MODULES = 16  # ladder module type "all ladder and C modules" (938914 §4.13.1; the IPC's UPLF 7 16 0)
+
+
+def program_index(number, group=0):
+    """Programme number indexed by the axis group: number × 10 + group (938914 §4.13.4.1)."""
+    if not 0 <= group <= 9 or number < 0:
+        raise ValueError(f"%{number}.{group} is not a programme name")
+    return number * 10 + group
+
+
+class Program(NamedTuple):
+    """A part programme in the NC RAM, as the directory lists it (938914 §4.16.1)."""
+    number: int
+    group: int
+    size: int
+
+    @classmethod
+    def from_index(cls, index, size):
+        return cls(index // 10, index % 10, size)
+
+    @property
+    def name(self):
+        return f"%{self.number}.{self.group}"
