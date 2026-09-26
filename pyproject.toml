@@ -18,6 +18,5 @@ pytest = "^7.0"
 
 [tool.poetry.scripts]
 test = "example.test:main"
-listen = "example.listen:main"
 panel = "example.panel:main"
 backup = "example.backup:main"

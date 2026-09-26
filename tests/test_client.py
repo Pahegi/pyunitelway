@@ -510,20 +510,32 @@ class TestCycleStart:
             assert sent == []
 
 
-class TestFeedStop:
-    # 938914 §4.10: Stop = 25 / category 0; FE = feed stopped, FD = NC status incompatible with feed stop. Never sent.
+class TestCycleStop:
+    # 938914 §4.10: Stop = 25 / category 0; FE = the CYHLD machining stop, FD = NC status incompatible with feed stop
 
     def test_frame_and_answers(self):
         sent = []
-        assert client_answering([0xFE], sent, writable={Action.FEED_STOP}).feed_stop() is True
-        assert client_answering([0xFD], writable={Action.FEED_STOP}).feed_stop() is False
+        assert client_answering([0xFE], sent, writable={Action.CYCLE_STOP}).cycle_stop() is True
+        assert client_answering([0xFD], writable={Action.CYCLE_STOP}).cycle_stop() is False
         assert sent == [[0x25, 0x00]]
+
+    def test_feed_stop_is_the_same_request_under_the_manual_name(self):
+        assert Action.FEED_STOP is Action.CYCLE_STOP
+        sent = []
+        assert client_answering([0xFE], sent, writable={Action.FEED_STOP}).feed_stop() is True
+        assert sent == [[0x25, 0x00]]
+
+    def test_read_cycle_stopped(self):
+        sent = []
+        assert client_answering([0x66, 0x01, 0x80], sent).read_cycle_stopped() is True
+        assert client_answering([0x66, 0x01, 0x00]).read_cycle_stopped() is False
+        assert sent == [[0x36, 0x00, 0xA4, 0x01, 0x03, 0x00, 0x01, 0x00]]  # %R3.1 E_ARUS
 
     def test_locked_and_not_opened_by_cycle_start(self):
         for kwargs in ({}, {"writable": {Action.CYCLE_START}}, {"writable": ALL_NC_OBJECTS | ALL_LADDER_SEGMENTS}):
             sent = []
             with pytest.raises(WriteNotAllowed):
-                client_answering([0xFE], sent, **kwargs).feed_stop()
+                client_answering([0xFE], sent, **kwargs).cycle_stop()
             assert sent == []
 
 

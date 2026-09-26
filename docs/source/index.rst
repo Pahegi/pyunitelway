@@ -30,7 +30,9 @@ transfer slot is closed in every case - the ladder archive is the one type the N
 ``poetry run backup``. No download, no Delete-File.
 ``cycle_start`` (UNI-TE Run, 938914 §4.9: CYCLE START in the current mode, ``False`` on the NC's refusal) was
 verified 2026-09-26 in MDI: a ``G4 F2`` dwell ran, a ``G0 X2000`` block moved the machine; ``read_cycle_in_progress``
-reads ``%R3.2`` E_CYCLE. ``feed_stop`` (UNI-TE Stop, 938914 §4.10, ``Action.FEED_STOP``) and ``shutdown`` are untested.
+reads ``%R3.2`` E_CYCLE. ``cycle_stop`` (UNI-TE Stop, 938914 §4.10: the CYHLD machining stop, the spindle keeps turning,
+``cycle_start`` resumes; alias ``feed_stop``) was verified the same evening; ``read_cycle_stopped`` reads ``%R3.1`` E_ARUS.
+``shutdown`` is untested.
 
 Writes are locked by default: ``write_ladder``, ``write_object`` and ``write_mode`` raise ``WriteNotAllowed``
 unless ``UnitelwayClient(writable={...})`` named the ladder segment (``"%W"``, where ``%W3.2`` is NC start),
@@ -72,7 +74,7 @@ Scripts: ``poetry run listen`` receives only and lists the link addresses the ma
 memory and a screen message are its only writes); ``poetry run panel`` renders the machine's operator panel (buttons, lamps, key
 switch, potentiometers) from ``%I0100``-``%I0104`` / ``%Q0100``-``%Q0102``, read-only, ``--watch 1``
 to refresh; ``poetry run backup`` writes a full backup (every part programme, the machine parameters, the PLC
-archive) into ``example/backup/<timestamp>/`` (``--dry-run`` for a canned NC).
+archive) into ``example/backup/<timestamp>/``.
 
 Setup
 =====

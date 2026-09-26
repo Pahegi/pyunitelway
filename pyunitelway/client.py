@@ -11,7 +11,7 @@ from pyunitelway.constants import *
 from pyunitelway.conversion import unwrap_unite_response
 from pyunitelway.errors import (NoPollingWindow, NoUniteResponse, UnexpectedDataLength, UnexpectedUniteResponse,
                                 UniteRequestFailed, WriteNotAllowed)
-from pyunitelway.num_constants import (Action, CYCLE_IN_PROGRESS, EXTRACTION_HOOD, LONG_WORKPIECE, OBJECT_SPEC, PLC_ALL_MODULES, VACUUM_PUMP,
+from pyunitelway.num_constants import (Action, CYCLE_IN_PROGRESS, CYCLE_STOPPED, EXTRACTION_HOOD, LONG_WORKPIECE, OBJECT_SPEC, PLC_ALL_MODULES, VACUUM_PUMP,
                                        WIDE_WORKPIECE, FileType, Mode, Object, program_index)
 from pyunitelway.unite_responses import (
     check_file_status,
@@ -425,14 +425,28 @@ class UnitelwayClient:
         """
         return self._nc_request(Action.CYCLE_START, RUN, "RUN", "NC status incompatible with a cycle start (938914 §4.9)")
 
-    def feed_stop(self):
-        """FEED STOP over the bus: the Stop request (938914 §4.10) - "stops axis feed, the spindles are not affected".
-        **Live**; needs ``Action.FEED_STOP`` in ``writable``. Never sent; not an emergency stop - that is the Not-Aus.
+    def read_cycle_stopped(self):
+        """Is the cycle held? Reads ``%R3.1`` (``E_ARUS`` "Cycle stop", 938846 §3.8.1): the CYHLD state after a Cycle
+        Stop, cleared by the next CYCLE START. The panel lamp ``%Q0100.0`` "NC-Stopp" follows it (``%SP11/08``).
 
-        :returns: ``True`` on ``0xFE``, ``False`` on the ``0xFD`` refusal
-        :raises WriteNotAllowed: ``Action.FEED_STOP`` not unlocked on this client
+        :rtype: bool
         """
-        return self._nc_request(Action.FEED_STOP, STOP, "STOP", "NC status incompatible with feed stop (938914 §4.10)")
+        return self.read_ladder(CYCLE_STOPPED)
+
+    def cycle_stop(self):
+        """CYCLE STOP over the bus: the Stop request (938914 §4.10, there called FEED STOP - "stops axis feed, the
+        spindles are not affected"). **Live**; needs ``Action.CYCLE_STOP`` in ``writable``.
+
+        It is the CYHLD machining stop of the operator manual (§5.5.1.1) and the ladder's NC-Halt (``%R3.1`` ENCHALT):
+        movement stops at once, the spindle keeps turning, the block resumes on :meth:`cycle_start`. Not an emergency
+        stop - that is the Not-Aus. Verified 2026-09-26 (todo.md H) from the console of ``poetry run test``.
+
+        :returns: ``True`` on ``0xFE``, ``False`` on the ``0xFD`` refusal ("NC status incompatible with feed stop")
+        :raises WriteNotAllowed: ``Action.CYCLE_STOP`` not unlocked on this client
+        """
+        return self._nc_request(Action.CYCLE_STOP, STOP, "STOP", "NC status incompatible with feed stop (938914 §4.10)")
+
+    feed_stop = cycle_stop  # the request's name in 938914 §4.10
 
     def read_vacuum_pump(self):
         """Is the vacuum pump contactor on? Reads ``%Q0700.6`` (``QK_VakpEin__``).
