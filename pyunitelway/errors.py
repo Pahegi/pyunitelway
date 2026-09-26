@@ -1,6 +1,5 @@
 class UnitelwayError(Exception):
-    def __init__(self, message):
-        super().__init__(message)
+    pass
 
 
 class BadUnitelwayChecksum(UnitelwayError):
@@ -15,32 +14,26 @@ class MalformedUnitelwayResponse(UnitelwayError):
 
 class RefusedUnitelwayMessage(UnitelwayError):
     def __init__(self):
-        super().__init__("Refused UNI-TELWAY message (X-WAY code = 0x22). See Notion for more details")
+        super().__init__("Refused UNI-TELWAY message (X-WAY service code 0x22)")
 
 
 class UniteRequestFailed(UnitelwayError):
     def __init__(self):
-        super().__init__("UNI-TE request failed (response: 0xFD). Possible causes: bad request code, bad values, ... See Notion for more details")
-
-
-class BadReadBitsNumberParam(ValueError):
-    def __init__(self, number):
-        super().__init__(f"Number has to be a multiple of 8 (it is {number})")
+        super().__init__("UNI-TE request failed (answer 0xFD): unknown request, bad value or NC state")
 
 
 class UnexpectedUniteResponse(UnitelwayError):
     def __init__(self, expected, got):
-        super().__init__(f"Expected 0x{expected:X}, got 0x{got:X}. Check that the UnitelwayClient's link address is not used by another slave station")
+        super().__init__(f"Expected answer code 0x{expected:X}, got 0x{got:X}; is another slave using our link address?")
 
 
-class UnexpectedAdditionalAwnserCode(UnitelwayError):
+class UnexpectedAdditionalAnswerCode(UnitelwayError):
     def __init__(self, expected, got):
-        super().__init__(f"Expected 0x{expected:X}, got 0x{got:X}")
+        super().__init__(f"Expected additional answer code 0x{expected:X}, got 0x{got:X}")
 
 
 class UnexpectedObjectTypeResponse(UnexpectedUniteResponse):
-    def __init__(self, expected, got):
-        super().__init__(expected, got)
+    pass
 
 
 class OperationInProgrammeArea(UnitelwayError):
@@ -50,11 +43,8 @@ class OperationInProgrammeArea(UnitelwayError):
 
 class NoPollingWindow(UnitelwayError):
     def __init__(self, address, timeout):
-        super().__init__(
-            f"The master never polled link address 0x{address:02X} within {timeout} s. "
-            "Check the adapter IP/port and that the NUM is powered on; run example/listen.py "
-            "to see which link addresses the master actually polls"
-        )
+        super().__init__(f"The master never polled link address 0x{address:02X} within {timeout} s; "
+                         "check the adapter address and that the NUM is on, and run `poetry run listen`")
 
 
 class UnexpectedDataLength(UnitelwayError):
@@ -69,26 +59,28 @@ class NoUniteResponse(UnitelwayError):
 
 class WriteNotAllowed(UnitelwayError):
     def __init__(self, target, allowed):
-        # enums print as Action.CYCLE_START / Object.MODE_SELECTION (the string form does not unlock them); variables as '%W16.B'
+        # enums print as Action.CYCLE_START, variables as '%W16.B'
         shown = f"{type(target).__name__}.{target.name}" if hasattr(target, "name") else repr(target)
         super().__init__(f"{shown} is locked; unlock it with UnitelwayClient(writable={{{shown}, ...}})")
 
 
 class FileTransferError(UnitelwayError):
+    """A file request answered a status other than the accepted ones (938914 §4.12-§4.16)."""
+
     def __init__(self, request, status, meaning):
         self.status = status
         super().__init__(f"{request}: status {status}, {meaning}")
 
 
 class ProgramRefused(UnitelwayError):
-    """write_program() refused before Open-Download-Sequence: nothing was sent."""
+    """write_program or delete_program refused before sending anything."""
 
     def __init__(self, name, reason):
         super().__init__(f"{name} refused, nothing sent: {reason}")
 
 
 class ProgramNotVerified(UnitelwayError):
-    """The programme was downloaded and closed, but the directory or the read-back does not match."""
+    """The NC answered 0, but the directory or the read-back afterwards does not match."""
 
     def __init__(self, name, reason):
-        super().__init__(f"{name} downloaded but not verified: {reason}")
+        super().__init__(f"{name}: {reason}")

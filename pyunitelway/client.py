@@ -15,25 +15,20 @@ from pyunitelway.num_constants import (Action, CYCLE_IN_PROGRESS, CYCLE_STOPPED,
                                        OBJECT_SPEC, PLC_ALL_MODULES, PROGRAM_NUMBER_MAX, VACUUM_PUMP, WIDE_WORKPIECE, FileType, Mode,
                                        Object, program_index)
 from pyunitelway.unite_responses import (
-    check_file_status,
+    check_status,
     decode_object,
     ladder_variable_name,
     parse_available_bytes_in_ram,
-    parse_delete_file,
     parse_directory,
-    parse_download_close,
-    parse_download_open,
     parse_download_segment,
     parse_ladder_read_response,
     parse_ladder_variable,
     parse_mirror_result,
-    parse_shutdown_result,
     parse_stations_managed_by_master,
     parse_unit_fault_history,
     parse_unit_identification,
     parse_unit_status,
     parse_upload_segment,
-    parse_write_result,
 )
 from pyunitelway.utils import (
     check_specific_answer,
@@ -294,71 +289,65 @@ class UnitelwayClient:
         log.info("%s -> %s", text, format_hex_list(unite))
         return unite
 
+    def _request(self, code, payload, text, timeout=TIMEOUT_SEC):
+        """Send ``code / category / payload``; return the answer once its code matches ``code``."""
+        resp = self.run_unite(self.link_address, [code, self.category_code, *payload], timeout, text=text)
+        if not is_valid_response_code(code, resp[0]):
+            raise UnexpectedUniteResponse(get_response_code(code), resp[0])
+        return resp
+
+    def _specific(self, code, payload, text, timeout=TIMEOUT_SEC, also_accept=()):
+        """Send a NUM specific request ``F5 / category / code / payload`` (938914 §3.6); return the checked answer."""
+        query = [SPECIFIC_REQUEST, self.category_code, code, *payload]
+        resp = self.run_unite(self.link_address, query, timeout, text=text)
+        check_specific_answer(resp, code, also_accept)
+        return resp
+
     # ------- objects (938914 §4.1) -------
 
     def _read_objects(self, segment, specific, start_address, number):
-        """Send Read-Object and return the raw answer ``code / specific / data`` (938914 §4.1.1).
+        """Read-Object (938914 §4.1.1): the raw answer ``66 / specific / data``.
 
-        :param int segment: Object family: an ``Object`` value or a ``LADDER_REQUEST`` code
-        :param int specific: Object size for ladder segments (938914 §4.1.3.3), else 0
-        :param int start_address: First object in the family
-        :param int number: Number of objects (not bytes)
+        :param int segment: ``Object`` value or ``LADDER_REQUEST`` code
+        :param int specific: Size byte for ladder segments (938914 §4.1.3.3), 0 for NC objects
+        :param int start_address: First object
+        :param int number: Objects, not bytes
         :rtype: list[int]
-        :raises UnexpectedUniteResponse: Answer code is not ``0x66``
         """
-        query = [READ_OBJECTS, self.category_code, segment, specific]
-        query += list(start_address.to_bytes(2, "little")) + list(number.to_bytes(2, "little"))
+        payload = [segment, specific, *start_address.to_bytes(2, "little"), *number.to_bytes(2, "little")]
         text = f"READ_OBJECTS seg=0x{segment:02X} spec={specific} @0x{start_address:04X} n={number}"
-        resp = self.run_unite(self.link_address, query, text=text)
-        if not is_valid_response_code(READ_OBJECTS, resp[0]):
-            raise UnexpectedUniteResponse(get_response_code(READ_OBJECTS), resp[0])
-        return resp
+        return self._request(READ_OBJECTS, payload, text)
 
     def _write_objects(self, segment, specific, start_address, number, data):
-        """Send Write-Object (938914 §4.1.2). **Live on the machine.**
+        """Write-Object (938914 §4.1.2). Live. Returns ``True`` once the NC answered ``FE``.
 
-        :param int segment: Object family
-        :param int specific: Object size for ladder segments, else 0
-        :param int start_address: First object to write
-        :param int number: Number of objects
         :param list[int] data: Object bytes, little-endian
-        :returns: ``True`` on the ``0xFE`` answer
-        :raises UnexpectedUniteResponse: Answer code is not ``0xFE``
         """
         if isinstance(data, int):
             data = [data]
-        query = [WRITE_OBJECTS, self.category_code, segment, specific]
-        query += list(start_address.to_bytes(2, "little")) + list(number.to_bytes(2, "little")) + list(data)
+        payload = [segment, specific, *start_address.to_bytes(2, "little"), *number.to_bytes(2, "little"), *data]
         text = f"WRITE_OBJECTS seg=0x{segment:02X} spec={specific} @0x{start_address:04X} data={format_hex_list(data)}"
-        resp = self.run_unite(self.link_address, query, text=text)
-        if not is_valid_response_code(WRITE_OBJECTS, resp[0]):
-            raise UnexpectedUniteResponse(get_response_code(WRITE_OBJECTS), resp[0])
-        return parse_write_result(resp)
+        self._request(WRITE_OBJECTS, payload, text)
+        return True
 
     def read_object(self, obj, address=0):
-        """Read one NC object and decode it per ``OBJECT_SPEC`` (938914 §4.1.3).
+        """Read one NC object, decoded per ``OBJECT_SPEC`` (938914 §4.1.3).
 
         :param Object obj: Object family
-        :param int address: Object index in the family (axis group, tool, E parameter, ...)
-        :returns: ``Mode``, signed ``int``, ``list[int]`` of signed long words, or the raw bytes
-        :raises UnexpectedDataLength: Answer size differs from the spec
+        :param int address: Index in the family (axis group, tool, E parameter, ...)
+        :returns: ``Mode``, signed ``int``, ``list[int]`` of long words, or raw bytes
         """
         spec = OBJECT_SPEC[obj]
-        resp = self._read_objects(obj, 0, address, 1)
-        data = resp[2:]
+        data = self._read_objects(obj, 0, address, 1)[2:]
         if len(data) != spec.size:
             raise UnexpectedDataLength(spec.size, data)
         return decode_object(spec, data)
 
     def write_object(self, obj, value, address=0):
-        """Write one NC object. **Live on the machine.**
+        """Write one NC object. Live; needs ``obj`` in ``writable``.
 
-        :param Object obj: Object family, must be writable per 938914 §4.1.3
+        :param Object obj: Object family, writable per 938914 §4.1.3
         :param value: ``Mode``, ``int``, list of long words or raw bytes, per the spec
-        :param int address: Object index in the family
-        :returns: ``True`` on the ``0xFE`` answer
-        :raises WriteNotAllowed: ``obj`` not unlocked on this client
-        :raises ValueError: Read-only object or malformed value
         """
         obj = Object(obj)
         if obj not in self.writable:
@@ -368,30 +357,18 @@ class UnitelwayClient:
             raise ValueError(f"{obj.name} is read-only (938914 §4.1.3)")
         return self._write_objects(obj, 0, address, 1, encode_object(spec, value))
 
-    # ------- this machine (IMA BIMA Quadroform C80/280) -------
-    
-    def read_mode(self):
-        """Current NC mode, segment 180.
+    # ------- this machine: IMA BIMA Quadroform C80/280 -------
 
-        :rtype: Mode
-        """
+    def read_mode(self):
+        """NC mode (segment 180) as ``Mode``."""
         return self.read_object(Object.MODE_SELECTION)
 
     def write_mode(self, mode):
-        """Select the NC mode, segment 180. **Live**; needs ``Object.MODE_SELECTION`` in ``writable``.
-
-        :param Mode mode: Mode to select
-        :returns: ``True`` on the ``0xFE`` answer
-        :raises WriteNotAllowed: Segment 180 not unlocked on this client
-        """
+        """Select the NC mode (segment 180). Live; needs ``Object.MODE_SELECTION`` in ``writable``."""
         return self.write_object(Object.MODE_SELECTION, Mode(mode))
 
     def _nc_request(self, action, code, text, refusal):
-        """A bare NC request ``code / category`` (938914 §4.9-4.10), locked like a write.
-
-        :returns: ``True`` on ``0xFE``, ``False`` on the ``0xFD`` refusal
-        :raises WriteNotAllowed: ``action`` not unlocked on this client
-        """
+        """Run or Stop (938914 §4.9, §4.10), locked like a write: ``True`` on ``FE``, ``False`` on the ``FD`` refusal."""
         if action not in self.writable:
             raise WriteNotAllowed(action, self.writable)
         try:
@@ -406,142 +383,76 @@ class UnitelwayClient:
         return True
 
     def read_cycle_in_progress(self):
-        """Is a cycle running? Reads ``%R3.2`` (``E_CYCLE`` "Cycle in progress", 938846 §3.8.1).
-
-        Verified 2026-09-26: 1 for 1.9 s while a ``G4 F2`` MDI block ran, 0 before and after.
-
-        :rtype: bool
-        """
+        """``%R3.2`` ``E_CYCLE`` "cycle in progress" (938846 §3.8.1)."""
         return self.read_ladder(CYCLE_IN_PROGRESS)
 
     def cycle_start(self):
-        """CYCLE START over the bus: the Run request (938914 §4.9). **Live - it starts the selected programme or the
-        MDI block in the current mode.** Needs ``Action.CYCLE_START`` in ``writable``; ``ALL_NC_OBJECTS`` and
-        ``ALL_LADDER_SEGMENTS`` do not include it.
+        """CYCLE START: the Run request (938914 §4.9). Live; needs ``Action.CYCLE_START`` in ``writable``.
 
-        The request goes to the NC directly, past the ladder's start memory (``%SP11``: Not-Aus quittiert, mode,
-        feed authorised, selected = active programme, valid work-list data, clamped workpiece side). What stays:
-        the NC's own state check - ``0xFD`` "NC status incompatible with a cycle start", also the answer when the MDI
-        block was already consumed - and the PLC's feed authorisation ``%W4.0`` AUTAV on every movement. Verified
-        2026-09-26 in MDI (todo.md G): a ``G4 F2`` block ran (:meth:`read_cycle_in_progress` high for 1.9 s), a repeat
-        on the consumed block answered ``0xFD``, ``G0 X2000`` moved the X axis with the feed pot read 0 - only the block
-        or programme in the NC decides what a start does.
-
-        :returns: ``True`` on ``0xFE``, ``False`` on the ``0xFD`` refusal
-        :raises WriteNotAllowed: ``Action.CYCLE_START`` not unlocked on this client
+        Starts the selected programme or MDI block in the current mode, past the ladder's start memory (``%SP11``).
+        Only the NC's own state check remains: ``False`` on its ``FD`` refusal, also once the MDI block is used up.
         """
         return self._nc_request(Action.CYCLE_START, RUN, "RUN", "NC status incompatible with a cycle start (938914 §4.9)")
 
     def read_cycle_stopped(self):
-        """Is the cycle held? Reads ``%R3.1`` (``E_ARUS`` "Cycle stop", 938846 §3.8.1): the CYHLD state after a Cycle
-        Stop, cleared by the next CYCLE START. The panel lamp ``%Q0100.0`` "NC-Stopp" follows it (``%SP11/08``).
-
-        :rtype: bool
-        """
+        """``%R3.1`` ``E_ARUS`` "cycle stop" (938846 §3.8.1): held by Cycle Stop until the next CYCLE START."""
         return self.read_ladder(CYCLE_STOPPED)
 
     def cycle_stop(self):
-        """CYCLE STOP over the bus: the Stop request (938914 §4.10, there called FEED STOP - "stops axis feed, the
-        spindles are not affected"). **Live**; needs ``Action.CYCLE_STOP`` in ``writable``.
+        """CYCLE STOP: the Stop request (938914 §4.10 "FEED STOP"). Live; needs ``Action.CYCLE_STOP`` in ``writable``.
 
-        It is the CYHLD machining stop of the operator manual (§5.5.1.1) and the ladder's NC-Halt (``%R3.1`` ENCHALT):
-        movement stops at once, the spindle keeps turning, the block resumes on :meth:`cycle_start`. Not an emergency
-        stop - that is the Not-Aus. Verified 2026-09-26 (todo.md H) from the console of ``poetry run test``.
-
-        :returns: ``True`` on ``0xFE``, ``False`` on the ``0xFD`` refusal ("NC status incompatible with feed stop")
-        :raises WriteNotAllowed: ``Action.CYCLE_STOP`` not unlocked on this client
+        The CYHLD machining stop: feed stops, the spindle keeps turning, :meth:`cycle_start` resumes. Not an
+        emergency stop.
         """
         return self._nc_request(Action.CYCLE_STOP, STOP, "STOP", "NC status incompatible with feed stop (938914 §4.10)")
 
-    feed_stop = cycle_stop  # the request's name in 938914 §4.10
+    feed_stop = cycle_stop  # the request's name in 938914
 
     def read_vacuum_pump(self):
-        """Is the vacuum pump contactor on? Reads ``%Q0700.6`` (``QK_VakpEin__``).
-
-        :rtype: bool
-        """
+        """``%Q0700.6`` ``QK_VakpEin__``: the vacuum pump contactor."""
         return self.read_ladder(VACUUM_PUMP)
 
     def write_vacuum_pump(self, on):
-        """Switch the vacuum pump on or off. **Live**; needs ``"%Q0700.6"`` or ``"%Q"`` in ``writable``.
+        """Start or stop the vacuum pump. Live; needs ``"%Q0700.6"`` or ``"%Q"`` in ``writable``.
 
-        Writes ``%Q0700.6`` (``QK_VakpEin__`` "KR Vakuumpumpe einschalten"). The PLC only sets and resets that
-        output from the panel key in ``%SP24/00``, so the written value holds until the key is pressed. Verified
-        2026-09-23: ``True`` started the pump, ``False`` stopped it. The spindle coolant pump runs with it; the panel
-        lamp ``%Q0100.5`` is not touched.
-
-        :param bool on: ``True`` starts the pump, ``False`` stops it
-        :returns: ``True`` on the ``0xFE`` answer
-        :raises WriteNotAllowed: ``%Q0700.6`` not unlocked on this client
+        The ladder only touches ``%Q0700.6`` from the panel key (``%SP24/00``), so the value holds. The coolant pump
+        runs with it.
         """
         return self.write_ladder(VACUUM_PUMP, bool(on))
 
     def read_extraction_hood(self):
-        """Is the "Absaugung Frässpindel" toggle on? Reads ``%Q0100.3`` (``QLBABFSAKT``, lamp = latch).
-
-        :rtype: bool
-        """
+        """``%Q0100.3`` ``QLBABFSAKT`` "Absaugung Frässpindel": the hood latch (lamp = state)."""
         return self.read_ladder(EXTRACTION_HOOD)
 
     def write_extraction_hood(self, on):
-        """Lift or lower the spindle extraction hood. **Live**; needs ``"%Q0100.3"`` or ``"%Q"`` in ``writable``.
+        """Lift or lower the spindle extraction hood. Live; needs ``"%Q0100.3"`` or ``"%Q"`` in ``writable``.
 
-        Writes the panel latch ``%Q0100.3`` (``QLBABFSAKT`` "Absaugung Frässpindel"), toggled by key ``%I0103.3`` in
-        ``%SP43/01``. ``%SP43/04`` drives the lift valves ``%Q0800.2`` (50 mm) / ``%Q0800.3`` (160 mm) only while the
-        latch is on, from the height memory ``%V942.0/.1`` set by M200-M203. ``False`` therefore lowers the hood
-        fully; ``True`` lifts it to the last programmed height (nothing if that is M200). A tool change needs the
-        hood up (both end switches), else feed stop ``%V80.7``. Verified 2026-09-26 20:15 by Paul at the machine:
-        ``True`` lifted the hood (``example/logs/test-20260926-2015*.log``, answer ``FE``).
-
-        :param bool on: ``False`` = hood down, ``True`` = hood at the programmed height
-        :returns: ``True`` on the ``0xFE`` answer
-        :raises WriteNotAllowed: ``%Q0100.3`` not unlocked on this client
+        ``%SP43/04`` drives the lift valves ``%Q0800.2/.3`` only while the latch is on and a height was programmed
+        (M201-M203): ``False`` lowers the hood, ``True`` lifts it to that height. A tool change needs it up.
         """
         return self.write_ladder(EXTRACTION_HOOD, bool(on))
 
     def read_long_workpiece(self):
-        """Is "Langes Werkstück" selected? Reads ``%Q0100.4`` (``QLBL_WKEIN``, lamp = latch).
-
-        :rtype: bool
-        """
+        """``%Q0100.4`` ``QLBL_WKEIN`` "Langes Werkstück": the long-part latch (lamp = state)."""
         return self.read_ladder(LONG_WORKPIECE)
 
     def write_long_workpiece(self, on):
-        """Select or deselect long-workpiece mode (Langteil, X > 900 mm). **Live**; needs ``"%Q0100.4"`` or ``"%Q"``.
+        """Select long-workpiece mode (Langteil). Live; needs ``"%Q0100.4"`` or ``"%Q"`` in ``writable``.
 
-        Writes ``%Q0100.4`` (``QLBL_WKEIN`` "Langes Werkstück"), toggled by key ``%I0103.4`` in ``%SP30/00``. Read by
-        34 networks: clamping uses both sides and the template valves, the stops lower on clamp (``%SP30/07``), the
-        tool magazine side follows it (``%SP44/02-03``), ``E40028`` mirrors it to the NC. A programme with
-        ``E30081 == 1`` (``VHM_LANGTEIL``) forces the latch from its M-function table. Fault 215 if a programme
-        needs it (``E30088`` 1 or 3) and it is off. Verified 2026-09-26: True → False → True on the idle machine, each
-        state read back, nothing moved (the stops, clamps and magazine also need a machining side ``%V7FB.0-.3``).
-
-        :param bool on: ``True`` selects, ``False`` deselects
-        :returns: ``True`` on the ``0xFE`` answer
-        :raises WriteNotAllowed: ``%Q0100.4`` not unlocked on this client
+        Read by 34 networks: clamping, stops, template valves, tool magazine side, ``E40028``. A programme's M table
+        (``E30081``) can force it; fault 215 if a programme needs it and it is off.
         """
         return self.write_ladder(LONG_WORKPIECE, bool(on))
 
     def read_wide_workpiece(self):
-        """Is "Überbreites Teil" selected? Reads ``%Q0101.4`` (``QLBB_WKEIN``, lamp = latch).
-
-        :rtype: bool
-        """
+        """``%Q0101.4`` ``QLBB_WKEIN`` "Überbreites Werkstück": the wide-part latch (lamp = state)."""
         return self.read_ladder(WIDE_WORKPIECE)
 
     def write_wide_workpiece(self, on):
-        """Select or deselect wide-workpiece mode (Breitteil, Y > 800 mm). **Live**; needs ``"%Q0101.4"`` or ``"%Q"``.
+        """Select wide-workpiece mode (Breitteil). Live; needs ``"%Q0101.4"`` or ``"%Q"`` in ``writable``.
 
-        Writes ``%Q0101.4`` (``QLBB_WKEIN`` "Überbreites Werkstück"), toggled by the unnamed key ``%I0102.4`` in
-        ``%SP44/01`` - the key only works outside a cycle, a direct write ignores that gate. With it on, the tool
-        magazine is driven to the side away from the machining side (``%SP44/02-03``, ``%Q0800.4/.5``) once a cycle
-        has set "Bearbeitung links/rechts". Fault 214 and feed stop ``%V82.4`` if a programme needs it (``E30088``
-        >= 2) and it is off; fault 198 if long and wide are both on with a tool change aborted. Verified 2026-09-26:
-        False → True → False with the long latch cleared meanwhile, each state read back, the magazine did not move.
-
-        :param bool on: ``True`` selects, ``False`` deselects
-        :returns: ``True`` on the ``0xFE`` answer
-        :raises WriteNotAllowed: ``%Q0101.4`` not unlocked on this client
+        The panel key only works outside a cycle; a write ignores that gate. With it on and a machining side set,
+        the tool magazine moves to the other side (``%SP44/02-03``). Never together with the long latch (fault 198).
         """
         return self.write_ladder(WIDE_WORKPIECE, bool(on))
 
@@ -550,32 +461,22 @@ class UnitelwayClient:
     def read_ladder(self, variable, signed=True):
         """Read one ladder variable.
 
-        :param str variable: ``%SNNNN.S`` - symbol ``%M %V %I %Q %R %W %S``, hex logical number, size
-            ``.0``-``.7`` (bit), ``.B``, ``.W``, ``.L`` or ``.&``. Index fields are not supported.
-        :param bool signed: ``.B``/``.W``/``.L`` as signed (938846 §4) or unsigned (I/O bytes, potentiometers)
-        :returns: ``bool`` for a bit, ``int`` for ``.B``/``.W``/``.L``, address ``int`` for ``.&``
-        :raises ValueError: Invalid variable
-        :raises UnexpectedUniteResponse: Answer code is not ``0x66``
-        :raises UnexpectedObjectTypeResponse: Echoed specific byte differs
-        :raises UnexpectedDataLength: Data length does not match the size
+        :param str variable: ``%SNNNN.S``: symbol ``%M %V %I %Q %R %W %S``, hex number, size ``.0``-``.7`` (bit),
+            ``.B``, ``.W``, ``.L`` or ``.&``; no index fields
+        :param bool signed: ``.B``/``.W``/``.L`` signed (938846 §4) or unsigned (I/O bytes, potentiometers)
+        :returns: ``bool`` for a bit, ``int`` otherwise
         """
         (_symbol, segment, address, size, _index) = parse_ladder_variable(variable)
         resp = self._read_objects(segment, ladder_specific_byte(size), address, 1)
         return parse_ladder_read_response(resp, size, signed)
 
     def write_ladder(self, variable, value, signed=True):
-        """Write one ladder variable. **Live on the machine.**
-
-        .. WARNING::
-            Trace the address with ``trace_signal.py`` first; ``%W3.2`` is NC start. Locked unless ``writable=``
-            names it.
+        """Write one ladder variable. Live; needs the variable or its segment in ``writable``. Trace the address
+        with ``trace_signal.py`` first: ``%W3.2`` is NC start.
 
         :param str variable: As for :meth:`read_ladder`
         :param value: ``bool`` for a bit, else an ``int`` in the signed or unsigned range of the size
-        :param bool signed: Which range ``value`` must fit
-        :returns: ``True`` on the ``0xFE`` answer
-        :raises WriteNotAllowed: Neither the variable nor its segment is unlocked on this client
-        :raises ValueError: Invalid variable, ``.&``, or value out of range
+        :returns: ``True`` on the ``FE`` answer
         """
         (symbol, segment, address, size, _index) = parse_ladder_variable(variable)
         name = ladder_variable_name(variable)
@@ -584,85 +485,41 @@ class UnitelwayClient:
         data = encode_ladder_value(size, value, signed)
         return self._write_objects(segment, ladder_specific_byte(size), address, 1, data)
 
-    # ------- general purpose requests (938914 §4.3 - §4.8) -------
+    # ------- general purpose requests (938914 §4.3-§4.8) -------
 
     def get_unit_identification(self):
-        """Unit identification (§4.3).
-
-        :returns: ``product_type_code``, ``product_type``, ``subtype``, ``product_version``, ``text``
-        :rtype: dict
-        """
-        resp = self.run_unite(self.link_address, [IDENTIFICATION, self.category_code], text="IDENTIFICATION")
-        if not is_valid_response_code(IDENTIFICATION, resp[0]):
-            raise UnexpectedUniteResponse(get_response_code(IDENTIFICATION), resp[0])
-        return parse_unit_identification(resp)
+        """Product type, version and name (§4.3) as a dict."""
+        return parse_unit_identification(self._request(IDENTIFICATION, [], "IDENTIFICATION"))
 
     def get_unit_status(self, axis_group_index=0):
-        """Unit status: NC + PLC state, programme status of one axis group (§4.4).
-
-        :param int axis_group_index: Axis group
-        :rtype: dict
-        """
-        resp = self.run_unite(self.link_address, [STATUS, self.category_code, axis_group_index], text="STATUS")
-        if not is_valid_response_code(STATUS, resp[0]):
-            raise UnexpectedUniteResponse(get_response_code(STATUS), resp[0])
-        return parse_unit_status(resp)
+        """NC and PLC state plus the programme status of one axis group (§4.4) as a dict."""
+        return parse_unit_status(self._request(STATUS, [axis_group_index], "STATUS"))
 
     def mirror(self, data):
-        """Mirror request: the NC echoes ``data`` (§4.5).
-
-        :param list[int] data: Up to 126 bytes
-        :returns: ``True`` if the echo matches
-        :rtype: bool
-        """
+        """Link test (§4.5): ``True`` if the NC echoes ``data`` (up to 126 bytes)."""
         if len(data) > 126:
             raise ValueError("mirror data is limited to 126 bytes (938914 §4.5)")
-        resp = self.run_unite(self.link_address, [MIRROR, self.category_code, *data], text="MIRROR")
-        if not is_valid_response_code(MIRROR, resp[0]):
-            raise UnexpectedUniteResponse(get_response_code(MIRROR), resp[0])
-        return parse_mirror_result(resp[1:], data)
+        return parse_mirror_result(self._request(MIRROR, data, "MIRROR")[1:], data)
 
     def get_unit_fault_history(self):
-        """Link error counters (§4.6): sent/not acknowledged, sent/rejected, received/not acknowledged, received/rejected.
-
-        :rtype: (int, int, int, int)
-        """
-        resp = self.run_unite(self.link_address, [READ_CPT, self.category_code], text="READ_CPT")
-        if not is_valid_response_code(READ_CPT, resp[0]):
-            raise UnexpectedUniteResponse(get_response_code(READ_CPT), resp[0])
-        return parse_unit_fault_history(resp)
+        """Link error counters (§4.6): sent/not acknowledged, sent/rejected, received/not acknowledged, received/rejected."""
+        return parse_unit_fault_history(self._request(READ_CPT, [], "READ_CPT"))
 
     def get_stations_managed_by_master(self):
-        """Stations managed by the master and their connected state (§4.7).
-
-        :rtype: (int, list[bool])
-        """
-        resp = self.run_unite(self.link_address, [ETAT_STATION, self.category_code], text="ETAT_STATION")
-        if not is_valid_response_code(ETAT_STATION, resp[0]):
-            raise UnexpectedUniteResponse(get_response_code(ETAT_STATION), resp[0])
-        return parse_stations_managed_by_master(resp)
+        """Stations the master manages and whether each is connected (§4.7): ``(count, [bool, ...])``."""
+        return parse_stations_managed_by_master(self._request(ETAT_STATION, [], "ETAT_STATION"))
 
     # ------- NUM specific requests (938914 §3.6) -------
 
     def get_available_bytes_in_ram(self):
-        """Free bytes in the NC RAM (§4.15).
-
-        :rtype: int
-        :raises OperationInProgrammeArea: Status ``0x02``
-        """
-        query = [SPECIFIC_REQUEST, self.category_code, READ_MEMORY_FREE]
-        resp = self.run_unite(self.link_address, query, text="READ_MEMORY_FREE")
-        check_specific_answer(resp, READ_MEMORY_FREE)
-        return parse_available_bytes_in_ram(resp)
+        """Free part-programme RAM in bytes (§4.15)."""
+        return parse_available_bytes_in_ram(self._specific(READ_MEMORY_FREE, [], "READ_MEMORY_FREE"))
 
     def write_message(self, message):
-        """Display a supervisor message on the NC (938914 §4.17, request F5/4B). **Live, unverified.**
+        """Show a supervisor message on the NC screen (§4.17, under E/A → Fehlermeldungen → Netz-Meldungen). Live.
 
-        :param message: One to three lines of up to 32 printable ASCII characters (``0x20``-``0x7F``):
-            a ``str`` with ``\\n`` between lines, or a list of lines. Each line is padded to 32 bytes.
-        :returns: ``True`` on the positive answer (``0xFE`` per §4.17, ``0x7B`` per the §3.6 table)
-        :raises ValueError: No line, more than three, a line over 32 characters, or a non-printable character
-        :raises UniteRequestFailed: Negative report ``0xFD`` (request unknown)
+        :param message: One to three lines of up to 32 printable ASCII characters: a ``str`` with ``\\n`` or a list
+        :returns: ``True``
         """
         lines = message.split("\n") if isinstance(message, str) else list(message)
         if not 1 <= len(lines) <= 3:
@@ -674,55 +531,32 @@ class UnitelwayClient:
             if len(line) > 32:
                 raise ValueError(f"line longer than 32 characters: {line!r}")
             if any(not 0x20 <= ord(c) <= 0x7F for c in line):
-                raise ValueError(f"non-printable character in {line!r} (allowed: 0x20-0x7F)")
+                raise ValueError(f"non-printable character in {line!r}")
             data += [ord(c) for c in line.ljust(32)]
-        query = [SPECIFIC_REQUEST, self.category_code, WRITE_MESSAGE, 0x00, len(lines)] + data  # index byte: not significant
-        resp = self.run_unite(self.link_address, query, text=f"WRITE_MESSAGE {len(lines)} line(s)")
-        check_specific_answer(resp, WRITE_MESSAGE, also_accept=(0xFE,))
+        # index byte 0; the NC answers FE where the §3.6 table says 7B
+        self._specific(WRITE_MESSAGE, [0x00, len(lines), *data], f"WRITE_MESSAGE {len(lines)} line(s)", also_accept=(0xFE,))
         return True
 
-    # cannot be safely tested on a live machine, possibly dangerous
-    # def shutdown(self):
-    #     """Shut down the PCNC PC module (938928 §10.4.10). **Untested; unknown whether a UC SII answers.**
-
-    #     :returns: ``True`` if the status byte is ``0x00``
-    #     """
-    #     query = [SPECIFIC_REQUEST, self.category_code, SHUTDOWN, 0x00]
-    #     resp = self.run_unite(self.link_address, query, text="SHUTDOWN")
-    #     check_specific_answer(resp, SHUTDOWN)
-    #     return parse_shutdown_result(resp)
-
-    # ------- files (938914 §4.13, §4.16): read only - no download or delete request exists here -------
-
-    def _answer(self, request, resp):
-        """Raise unless ``resp`` carries the answer code of ``request``; return it."""
-        if not is_valid_response_code(request, resp[0]):
-            raise UnexpectedUniteResponse(get_response_code(request), resp[0])
-        return resp
+    # ------- files: upload and directory (938914 §4.13, §4.16) -------
 
     def upload(self, file_type, identification=0, timeout=TIMEOUT_SEC):
-        """Read a file from the NC: Open-Upload-Sequence, Read-Upload-Segment ×n, Close-Upload-Sequence.
-
-        The NC has one transfer slot; the close goes out on every exit (the ladder archive is not auto-closed).
-        Verified on the machine 2026-09-26 for every file type.
+        """Read a file from the NC (§4.13): open, segments, close. The close goes out on every exit, because the NC
+        has one transfer slot and does not close every type itself.
 
         :param FileType file_type: What to read
-        :param int identification: Low three bytes of the file id: programme index, ladder module
-        :param float timeout: Answer wait per attempt (a large archive may need more to open)
-        :returns: The file as the NC sends it, 122 bytes per segment
+        :param int identification: Low three bytes of the file id (programme index, ladder module)
+        :param float timeout: Answer wait per attempt
         :rtype: bytes
         :raises FileTransferError: A status other than 0/15, or a segment out of sequence
         """
         name = f"{FileType(file_type).name} 0x{identification:06X}"
-        query = [OPEN_UPLOAD, self.category_code] + file_identification(file_type, identification)
-        resp = self._answer(OPEN_UPLOAD, self.run_unite(self.link_address, query, timeout, text=f"OPEN_UPLOAD {name}"))
-        status = check_file_status("OPEN_UPLOAD", resp[1], (0, 15))  # 15: programme empty
+        resp = self._request(OPEN_UPLOAD, file_identification(file_type, identification), f"OPEN_UPLOAD {name}", timeout)
+        status = check_status("OPEN_UPLOAD", resp[1], (0, 15))  # 15: empty programme
         data = bytearray()
         try:
             number = 1
             while status == 0:
-                query = [READ_UPLOAD, self.category_code, *number.to_bytes(2, "little")]
-                resp = self._answer(READ_UPLOAD, self.run_unite(self.link_address, query, timeout, text=f"READ_UPLOAD {name} #{number}"))
+                resp = self._request(READ_UPLOAD, number.to_bytes(2, "little"), f"READ_UPLOAD {name} #{number}", timeout)
                 status, segment = parse_upload_segment(resp, number)
                 data += segment
                 number += 1
@@ -731,210 +565,128 @@ class UnitelwayClient:
         return bytes(data)
 
     def close_upload(self, timeout=TIMEOUT_SEC):
-        """Close-Upload-Sequence (938914 §4.13.3); status 4 "already closed" is accepted.
-
-        :returns: ``True`` if a file was open
-        :rtype: bool
-        """
-        query = [CLOSE_UPLOAD, self.category_code]
-        resp = self._answer(CLOSE_UPLOAD, self.run_unite(self.link_address, query, timeout, text="CLOSE_UPLOAD"))
-        return check_file_status("CLOSE_UPLOAD", resp[1], (0, 4)) == 0
+        """Close-Upload-Sequence (§4.13.3): ``True`` if a file was open, ``False`` on status 4 "already closed"."""
+        resp = self._request(CLOSE_UPLOAD, [], "CLOSE_UPLOAD", timeout)
+        return check_status("CLOSE_UPLOAD", resp[1], (0, 4)) == 0
 
     def read_program(self, number, group=0, timeout=TIMEOUT_SEC):
-        """Part programme ``%number.group`` (file type H'12'). Verified 2026-09-26.
-
-        :rtype: bytes
-        """
+        """Part programme ``%number.group`` (type H'12') as stored: CR LF line ends, no ``%`` line."""
         return self.upload(FileType.PART_PROGRAM, program_index(number, group), timeout)
 
     def read_machine_parameters(self, timeout=TIMEOUT_SEC):
-        """Machine parameters (file type H'05'): the ``.xpa`` text the IPC's ``UPLF 5 0 0`` saves. Verified 2026-09-26.
-
-        :rtype: bytes
-        """
+        """Machine parameters (type H'05'): the ``.xpa`` text of the IPC's ``UPLF 5 0 0``."""
         return self.upload(FileType.MACHINE_PARAMETERS, 0, timeout)
 
     def read_plc_archive(self, timeout=TIMEOUT_SEC):
-        """All ladder and C modules (file type H'07', module type 16): the ``.xar`` of ``UPLF 7 16 0``. Verified 2026-09-26.
-
-        :rtype: bytes
-        """
+        """All ladder and C modules (type H'07', module type 16): the ``.xar`` of ``UPLF 7 16 0``, about 111 KB."""
         return self.upload(FileType.PLC_LADDER, PLC_ALL_MODULES << 16, timeout)
 
     def read_macros(self, timeout=TIMEOUT_SEC):
-        """Resident macros (file type H'03', 938914 §4.13.1; identification "not significant"): the protected
-        part-programme areas 1 customer, 2 OEM and 3 NUM (938818 P95, 938822 §4.5.1). Verified 2026-09-26: one segment,
-        92 bytes, one 29-byte record ``%00`` + 26 opaque bytes per area and ``%99 CR LF``; the NC closed it itself.
-        No reference file exists, the IPC's tools never transferred it.
-
-        :rtype: bytes
-        """
+        """Resident macros (type H'03'): one 29-byte record per protected area 1-3 (938818 P95); all empty here."""
         return self.upload(FileType.MACROS, 0, timeout)
 
     def read_axis_calibration(self, timeout=TIMEOUT_SEC):
-        """Axis calibration (file type H'02', 938914 §4.13.1; identification "not significant"), the tables the machine
-        backup of 938822 §8.5 lists beside the parameters. Verified 2026-09-26: text in the ``.xpa`` format, on this
-        machine only the ``%12205000`` software-version header and the DC3 ``;01`` trailer (21 bytes, no table stored);
-        the NC closed it itself.
-
-        :rtype: bytes
-        """
+        """Axis calibration (type H'02') in the ``.xpa`` text format; header and trailer only on this machine."""
         return self.upload(FileType.AXIS_CALIBRATION, 0, timeout)
 
     def read_directory(self, start=0, group=0):
-        """Part programmes in the NC RAM from ``%start.group`` upward (938914 §4.16), 15 per answer. Verified 2026-09-26.
-
-        :returns: ``Program(number, group, size)`` in the NC's ascending order
-        :rtype: list[Program]
-        :raises OperationInProgrammeArea: Status 2, the NC is busy in the programme area
-        :raises FileTransferError: Status 9 "buffer too small" or another rejection
-        """
-        query = [SPECIFIC_REQUEST, self.category_code, OPEN_DIRECTORY, *program_index(start, group).to_bytes(4, "little")]
-        resp = self.run_unite(self.link_address, query, text=f"OPEN_DIRECTORY from %{start}.{group}")
-        check_specific_answer(resp, OPEN_DIRECTORY)
-        status, programs = parse_directory(resp, "OPEN_DIRECTORY")
+        """Part programmes in the NC RAM from ``%start.group`` upward (§4.16) as ``Program`` tuples, NC order."""
+        payload = program_index(start, group).to_bytes(4, "little")
+        status, programs = parse_directory(self._specific(OPEN_DIRECTORY, payload, f"OPEN_DIRECTORY from %{start}.{group}"), "OPEN_DIRECTORY")
         try:
             while status == 0:
-                query = [SPECIFIC_REQUEST, self.category_code, DIRECTORY]
-                resp = self.run_unite(self.link_address, query, text="DIRECTORY")
-                check_specific_answer(resp, DIRECTORY)
-                status, more = parse_directory(resp, "DIRECTORY")
+                status, more = parse_directory(self._specific(DIRECTORY, [], "DIRECTORY"), "DIRECTORY")
                 programs += more
         finally:
-            if status == 0:  # 15 = the NC closed it itself
+            if status == 0:  # 15: the NC closed it itself
                 self.close_directory()
         return programs
 
     def close_directory(self):
-        """Close-Directory (938914 §4.16.3); status 4 "already closed" is accepted.
+        """Close-Directory (§4.16.3): ``True`` if a listing was open, ``False`` on status 4 "already closed"."""
+        return check_status("CLOSE_DIRECTORY", self._specific(CLOSE_DIRECTORY, [], "CLOSE_DIRECTORY")[2], (0, 4)) == 0
 
-        :returns: ``True`` if a directory read was open
-        :rtype: bool
-        """
-        query = [SPECIFIC_REQUEST, self.category_code, CLOSE_DIRECTORY]
-        resp = self.run_unite(self.link_address, query, text="CLOSE_DIRECTORY")
-        check_specific_answer(resp, CLOSE_DIRECTORY)
-        return check_file_status("CLOSE_DIRECTORY", resp[2], (0, 4)) == 0
+    # ------- files: download and delete (938914 §4.12, §4.14), part programmes only -------
 
-    # ------- download (938914 §4.12): part programmes only, todo.md K -------
-
-    def write_program(self, number, text, group=0, timeout=TIMEOUT_SEC):
-        """Store a part programme ``%number.group`` in the NC RAM: Open-Download-Sequence, Write-Download-Segment ×n,
-        Close-Download-Sequence (938914 §4.12), then read it back. **Live.** Verified 2026-09-26 (todo.md K): `%7778.0`
-        in one segment and `%7779.0` in three, each read back byte for byte; an existing number answers status 1.
-
-        The only download this library makes. The file type is part programme for storage (H'12'); machine parameters,
-        the PLC, macros, axis calibration and drip feed are not reachable from here. Refused before anything is sent:
-        the lock (``Action.WRITE_PROGRAM``), a number in ``IMA_PROGRAM_NUMBERS`` or above ``PROGRAM_NUMBER_MAX``, a text
-        the NC would reject (``program_blocks``), a running programme or EDIT mode, the active programme ``%R1A.W``, a
-        number the directory already lists (nothing is ever overwritten), too little free RAM. The NC's own status 1
-        "file already exists" is the second line of defence. Whole blocks per segment, the echoed segment number is
-        checked, the close goes out on every exit; afterwards the directory must list the programme and
-        :meth:`read_program` must return the bytes that were sent.
-
-        :param int number: Programme number, 1 to ``PROGRAM_NUMBER_MAX``
-        :param text: The programme body without its ``%`` line: ``str`` (line ends normalised) or ``bytes`` (as is)
-        :param int group: Axis group, 0 on this machine
-        :param float timeout: Answer wait per attempt
-        :returns: The programme's size as the directory lists it afterwards
-        :rtype: int
-        :raises WriteNotAllowed: ``Action.WRITE_PROGRAM`` not unlocked on this client
-        :raises ValueError: Text the NC would reject or store wrong
-        :raises ProgramRefused: A client-side check failed; nothing was sent
-        :raises FileTransferError: The NC answered a status other than 0 (close 11 = it deleted the file)
-        :raises ProgramNotVerified: Stored, but the directory or the read-back does not match
-        """
-        if Action.WRITE_PROGRAM not in self.writable:
-            raise WriteNotAllowed(Action.WRITE_PROGRAM, self.writable)
+    def _program_target(self, action, number, group):
+        """The refusals write_program and delete_program share; returns ``(name, index)``."""
+        if action not in self.writable:
+            raise WriteNotAllowed(action, self.writable)
         name = f"%{number}.{group}"
         if not 1 <= number <= PROGRAM_NUMBER_MAX or number in IMA_PROGRAM_NUMBERS:
-            raise ProgramRefused(name, f"IMA's programmes and %{PROGRAM_NUMBER_MAX + 1} upward are never written")
-        index = program_index(number, group)
-        blocks = program_blocks(text)
-        data = b"".join(blocks)
-        segments = download_segments(blocks)
+            raise ProgramRefused(name, f"IMA's programmes and %{PROGRAM_NUMBER_MAX + 1} upward are never touched")
         status = self.get_unit_status()
         mode, running = status["nc_mode"], status["nc_status"]["active_program"]
         if running or mode is Mode.EDIT:
             raise ProgramRefused(name, f"NC not idle (programme running={running}, mode={mode.name})")
         if status["current_program_number"] == number:
-            raise ProgramRefused(name, "it is the active programme (%R1A.W PROGCOUR)")
-        if index in {program_index(p.number, p.group) for p in self.read_directory()}:
+            raise ProgramRefused(name, "it is the active programme (%R1A.W)")
+        return name, program_index(number, group)
+
+    def _directory_sizes(self):
+        """``{programme index: size}`` from a fresh directory read."""
+        return {program_index(p.number, p.group): p.size for p in self.read_directory()}
+
+    def write_program(self, number, text, group=0, timeout=TIMEOUT_SEC):
+        """Store a part programme in the NC RAM (§4.12) and read it back. Live; needs ``Action.WRITE_PROGRAM``.
+
+        The only download here: type H'12', never to an existing number (the NC refuses those with status 1 too).
+        Refused before anything is sent: IMA's numbers and ``%9000`` upward, a running or editing NC, the active
+        programme, a listed number, too little RAM, and text the NC would reject (``program_blocks``).
+
+        :param int number: 1 to ``PROGRAM_NUMBER_MAX``
+        :param text: Programme body without its ``%`` line: ``str`` (line ends normalised) or ``bytes`` (as is)
+        :returns: Size in the directory afterwards
+        :raises ProgramRefused: A check failed, nothing was sent
+        :raises FileTransferError: The NC answered a status other than 0
+        :raises ProgramNotVerified: Stored, but the directory or the read-back differs
+        """
+        name, index = self._program_target(Action.WRITE_PROGRAM, number, group)
+        blocks = program_blocks(text)
+        data = b"".join(blocks)
+        segments = download_segments(blocks)
+        if index in self._directory_sizes():
             raise ProgramRefused(name, "already in the NC RAM, nothing is overwritten")
         free = self.get_available_bytes_in_ram()
         if free < len(data) + 128:
-            raise ProgramRefused(name, f"{free} bytes free, {len(data) + 128} needed (938914 §4.12.1 status 3)")
-        log.info("write_program %s: %d blocks, %d bytes in %d segment(s)", name, len(blocks), len(data), len(segments))
-        query = [OPEN_DOWNLOAD, self.category_code] + file_identification(FileType.PART_PROGRAM, index)
-        resp = self._answer(OPEN_DOWNLOAD, self.run_unite(self.link_address, query, timeout, text=f"OPEN_DOWNLOAD {name}"))
-        parse_download_open(resp)
+            raise ProgramRefused(name, f"{free} bytes free, {len(data) + 128} needed")
+        log.info("write_program %s: %d blocks, %d bytes, %d segment(s)", name, len(blocks), len(data), len(segments))
+        resp = self._request(OPEN_DOWNLOAD, file_identification(FileType.PART_PROGRAM, index), f"OPEN_DOWNLOAD {name}", timeout)
+        check_status("OPEN_DOWNLOAD", resp[1])
         try:
             for n, segment in enumerate(segments, 1):
-                query = [WRITE_DOWNLOAD, self.category_code, *n.to_bytes(2, "little"), *len(segment).to_bytes(2, "little"), *segment]
-                resp = self._answer(WRITE_DOWNLOAD, self.run_unite(self.link_address, query, timeout, text=f"WRITE_DOWNLOAD {name} #{n}"))
-                parse_download_segment(resp, n)
+                payload = [*n.to_bytes(2, "little"), *len(segment).to_bytes(2, "little"), *segment]
+                parse_download_segment(self._request(WRITE_DOWNLOAD, payload, f"WRITE_DOWNLOAD {name} #{n}", timeout), n)
         finally:
             self.close_download(timeout)
-        listed = {program_index(p.number, p.group): p.size for p in self.read_directory()}
+        listed = self._directory_sizes()
         if index not in listed:
             raise ProgramNotVerified(name, "not in the directory after the close")
         back = self.read_program(number, group, timeout)
         if back != data:
             raise ProgramNotVerified(name, f"read back {len(back)} bytes, sent {len(data)}")
-        log.info("write_program %s: stored and read back, %d bytes in the directory", name, listed[index])
         return listed[index]
 
     def close_download(self, timeout=TIMEOUT_SEC):
-        """Close-Download-Sequence (938914 §4.12.3); status 4 "no file being downloaded" is accepted.
-
-        :returns: ``True`` if a file was open
-        :rtype: bool
-        :raises FileTransferError: Status 11 (the NC deleted the file: last block without LF) or another rejection
-        """
-        query = [CLOSE_DOWNLOAD, self.category_code]
-        resp = self._answer(CLOSE_DOWNLOAD, self.run_unite(self.link_address, query, timeout, text="CLOSE_DOWNLOAD"))
-        return parse_download_close(resp) == 0
+        """Close-Download-Sequence (§4.12.3): ``True`` if a file was open, ``False`` on status 4. Status 11 raises:
+        the last block had no LF and the NC deleted the file."""
+        resp = self._request(CLOSE_DOWNLOAD, [], "CLOSE_DOWNLOAD", timeout)
+        return check_status("CLOSE_DOWNLOAD", resp[1], (0, 4)) == 0
 
     def delete_program(self, number, group=0, timeout=TIMEOUT_SEC):
-        """Delete the part programme ``%number.group`` from the NC RAM: Delete-File (938914 §4.14, ``F5/46``).
-        **Live.** Verified 2026-09-26: the empty ``%7777.0`` answered ``F5 76 00`` and left the directory.
+        """Delete a part programme from the NC RAM: Delete-File (§4.14). Live; needs ``Action.DELETE_PROGRAM``.
 
-        Part programmes only (type H'12'); PLC files are not reachable from here. Refused before anything is sent:
-        the lock (``Action.DELETE_PROGRAM``), a number in ``IMA_PROGRAM_NUMBERS`` or above ``PROGRAM_NUMBER_MAX``, a
-        running programme or EDIT mode, the active programme ``%R1A.W``, a number a fresh directory read does not list.
-        Afterwards the directory must not list it any more.
+        Same refusals as :meth:`write_program`, and the number must be listed; afterwards it must be gone.
 
-        :param int number: Programme number, 1 to ``PROGRAM_NUMBER_MAX``
-        :param int group: Axis group, 0 on this machine
-        :param float timeout: Answer wait per attempt
-        :returns: The size the directory listed before the deletion
-        :rtype: int
-        :raises WriteNotAllowed: ``Action.DELETE_PROGRAM`` not unlocked on this client
-        :raises ProgramRefused: A client-side check failed; nothing was sent
-        :raises FileTransferError: The NC answered a status other than 0
-        :raises ProgramNotVerified: Status 0, but the directory still lists the programme
+        :returns: Size the directory listed before
         """
-        if Action.DELETE_PROGRAM not in self.writable:
-            raise WriteNotAllowed(Action.DELETE_PROGRAM, self.writable)
-        name = f"%{number}.{group}"
-        if not 1 <= number <= PROGRAM_NUMBER_MAX or number in IMA_PROGRAM_NUMBERS:
-            raise ProgramRefused(name, f"IMA's programmes and %{PROGRAM_NUMBER_MAX + 1} upward are never deleted")
-        index = program_index(number, group)
-        status = self.get_unit_status()
-        mode, running = status["nc_mode"], status["nc_status"]["active_program"]
-        if running or mode is Mode.EDIT:
-            raise ProgramRefused(name, f"NC not idle (programme running={running}, mode={mode.name})")
-        if status["current_program_number"] == number:
-            raise ProgramRefused(name, "it is the active programme (%R1A.W PROGCOUR)")
-        listed = {program_index(p.number, p.group): p.size for p in self.read_directory()}
+        name, index = self._program_target(Action.DELETE_PROGRAM, number, group)
+        listed = self._directory_sizes()
         if index not in listed:
             raise ProgramRefused(name, "not in the NC RAM")
         log.info("delete_program %s: %d bytes in the directory", name, listed[index])
-        query = [SPECIFIC_REQUEST, self.category_code, DELETE_FILE] + file_identification(FileType.PART_PROGRAM, index)[:4]
-        resp = self.run_unite(self.link_address, query, timeout, text=f"DELETE_FILE {name}")
-        check_specific_answer(resp, DELETE_FILE)
-        parse_delete_file(resp)
-        if index in {program_index(p.number, p.group) for p in self.read_directory()}:
+        resp = self._specific(DELETE_FILE, file_identification(FileType.PART_PROGRAM, index)[:4], f"DELETE_FILE {name}", timeout)
+        check_status("DELETE_FILE", resp[2])
+        if index in self._directory_sizes():
             raise ProgramNotVerified(name, "still in the directory after status 0")
-        log.info("delete_program %s: gone from the directory", name)
         return listed[index]

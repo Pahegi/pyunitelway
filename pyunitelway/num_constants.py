@@ -82,7 +82,7 @@ class Object(IntEnum):
     MODE_SELECTION = 0xB4
     CURRENT_PROGRAMME_NUMBER = 0xB5
     DATA_TRANSMITTED_TO_PROGRAMME_BEING_EXECUTED = 0xE0
-    ACKNOWLEDGEMENT_OF_BLOCKING_MESSAGE = 0xE2  #$11 or $22
+    ACKNOWLEDGEMENT_OF_BLOCKING_MESSAGE = 0xE2  # $11 or $22
 
 
 ALL_NC_OBJECTS = frozenset(Object)  # for UnitelwayClient(writable=...)
@@ -92,10 +92,10 @@ class Action(IntEnum):
     """Requests that make the machine act and are locked like writes (``UnitelwayClient(writable={Action.CYCLE_START})``).
     On purpose outside ``ALL_NC_OBJECTS`` and ``ALL_LADDER_SEGMENTS``."""
     CYCLE_START = 0x24  # UNI-TE Run (938914 §4.9): CYCLE START in the current mode, past the ladder's start memory
-    CYCLE_STOP = 0x25  # UNI-TE Stop (938914 §4.10 "FEED STOP"): the CYHLD machining stop, spindle keeps turning; verified 2026-09-26
+    CYCLE_STOP = 0x25  # UNI-TE Stop (938914 §4.10 "FEED STOP"): the CYHLD machining stop, the spindle keeps turning
     FEED_STOP = 0x25  # alias: the request's name in 938914
-    WRITE_PROGRAM = 0x3A  # Open-Download-Sequence (938914 §4.12): store a part programme in the NC RAM; verified 2026-09-26
-    DELETE_PROGRAM = 0x46  # Delete-File (938914 §4.14, F5/46): remove a part programme from the NC RAM; verified 2026-09-26
+    WRITE_PROGRAM = 0x3A  # Open-Download-Sequence (938914 §4.12): store a part programme in the NC RAM
+    DELETE_PROGRAM = 0x46  # Delete-File (938914 §4.14, F5/46): remove a part programme from the NC RAM
 
 
 class ObjectSpec(NamedTuple):
@@ -140,18 +140,18 @@ OBJECT_SPEC = {
 
 # ------- IMA BIMA Quadroform C80/280: ladder addresses of this machine (SPS.md, trace_signal.py) -------
 
-VACUUM_PUMP = "%Q0700.6"  # QK_VakpEin__ "KR Vakuumpumpe einschalten": pump contactor, latched by %SP24/00; verified 2026-09-23
-# The next three are panel lamps that double as the state latch (Set/Reset from the key, no cyclic coil), like the pump.
+VACUUM_PUMP = "%Q0700.6"  # QK_VakpEin__ "KR Vakuumpumpe einschalten": pump contactor, set/reset by the panel key (%SP24/00)
+# panel lamps that double as the state latch: set/reset by the key, no cyclic coil
 EXTRACTION_HOOD = "%Q0100.3"  # QLBABFSAKT "Absaugung Frässpindel": on = hood lifted per M200-M203 (%SP43/04), off = hood down
 LONG_WORKPIECE = "%Q0100.4"  # QLBL_WKEIN "Langes Werkstück": long-part clamping, stops, E40028 (%SP30/00, /03)
 WIDE_WORKPIECE = "%Q0101.4"  # QLBB_WKEIN "Überbreites Werkstück": key %I0102.4, %SP44/01; magazine side in %SP44/02-03
-CYCLE_STOPPED = "%R3.1"  # E_ARUS = ENCHALT "Cycle stop" (938846 §3.8.1): CYHLD held; lamp %Q0100.0 NC-Stopp follows it (%SP11/08)
-CYCLE_IN_PROGRESS = "%R3.2"  # E_CYCLE "Cycle in progress" (938846 §3.8.1); 2026-09-26: 1 for 1.9 s during a G4 F2 dwell
+CYCLE_STOPPED = "%R3.1"  # E_ARUS "Cycle stop" (938846 §3.8.1): CYHLD held; the NC-Stopp lamp %Q0100.0 follows it (%SP11/08)
+CYCLE_IN_PROGRESS = "%R3.2"  # E_CYCLE "Cycle in progress" (938846 §3.8.1)
 NC_START = "%W3.2"  # AZYKLUS = C_CYCLE "CYCLE START pulse" (938846 §3.8.2): %SP11/03 coil; a direct write skips the start memory
 
 
 class FileType(IntEnum):
-    """Upload file types (938914 §4.13.1): the high byte of the file identification."""
+    """File types (938914 §4.12.1, §4.13.1): the high byte of the file identification."""
     AXIS_CALIBRATION = 0x02
     MACROS = 0x03
     MACHINE_PARAMETERS = 0x05
@@ -185,8 +185,8 @@ class Program(NamedTuple):
         return f"%{self.number}.{self.group}"
 
 
-# Part programmes write_program() never touches (todo.md K): IMA's own programmes below %9000 as the 2023 NCDat backup and
-# the 2026-09-26 directory list them; %9000 upward (9001 active programme, 9997 Verrechnungen, ...) is refused by range.
+# Programme numbers write_program and delete_program never touch: IMA's own programmes below %9000 (2023 NCDat backup
+# and the directory); %9000 upward (9001 active programme, 9997 Verrechnungen, ...) is refused by range.
 PROGRAM_NUMBER_MAX = 8999
 IMA_PROGRAM_NUMBERS = frozenset({5, 6, 8, 9, 10, 11, 12, 14, 30, 31, 32, 33, 34, 35, 81, 83, 85, 86, 89, 91, 92, 93, 95,
                                  97, 98, 100, 101, 111, 602, 603, 609})

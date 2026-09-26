@@ -5,45 +5,35 @@ A UNI-TELWAY slave client plus UNI-TE requests for the NUM 1060 Series II CNC of
 Quadroform C80/280 at Makerspace Darmstadt. Fork of
 `Purecontrol/pyunitelway <https://github.com/Purecontrol/pyunitelway>`_.
 
-Status: prototype. Verified on the machine on 2026-09-22 (the frames are regression vectors in
-``tests/test_hardware_vectors.py``):
+Status: prototype, run ad hoc from a laptop. Everything below was verified on the machine; the frames are
+regression vectors in ``tests/test_hardware_vectors.py`` and the history is in the repository's todo.md.
 
-* ``mirror`` - link test
-* ``get_unit_identification`` - product type, version, name
-* ``get_unit_status`` - NC/PLC status, programme status (segment 153), mode, programme number
-* ``get_available_bytes_in_ram``
-* ``read_mode`` / ``read_object`` - NC objects (938914 §4.1.3), e.g. the operating mode as ``Mode``
-* ``read_ladder`` - PLC variables ``%M %V %I %Q %R %W %S`` as bit, byte, word or long word (verified on
-  every segment)
-* ``get_stations_managed_by_master``, ``get_unit_fault_history``
+Reads
 
-Verified live write (2026-09-22): ``write_mode`` - MANUAL and back to AUTO, read back over ``read_mode``
-and ``%R16.B``. ``write_object`` for the other families and ``_write_objects`` are unit-tested only.
-Verified 2026-09-23: ``write_ladder`` (a ``%W`` byte written and restored; bit and word writes on unnamed
-``%V`` memory, each read back), ``write_message`` (938914 §4.17; the NC lists it under E/A →
-Fehlermeldungen → Netz-Meldungen, no acknowledgement) and a ``%Q`` output: ``write_vacuum_pump(True)`` writes
-``%Q0700.6`` and starts the vacuum pump, ``False`` stops it (the coolant pump runs with it); ``read_vacuum_pump``.
-The panel latches ``write_extraction_hood`` (``%Q0100.3``, ``True`` lifted the hood), ``write_long_workpiece``
-(``%Q0100.4``) and ``write_wide_workpiece`` (``%Q0101.4``) were verified 2026-09-26, each with a ``read_`` twin. File reading (938914 §4.13/§4.16) verified on the machine 2026-09-26:
-``read_directory``, ``read_program``, ``read_machine_parameters``, ``read_plc_archive`` (plus ``read_macros``, file type
-H'03', the resident-macro areas, and ``read_axis_calibration``, H'02', both verified 2026-09-26 and empty on this machine) (bytes; the NC's single
-transfer slot is closed in every case - the ladder archive is the one type the NC does not close itself), driven by
-``poetry run backup``. Download (938914 §4.12): ``write_program(number, text)`` stores one part programme (verified
-2026-09-26, todo.md K: one- and three-segment programmes read back byte for byte, an existing number answers status 1):
-the only download in the library, locked behind ``Action.WRITE_PROGRAM``; it refuses IMA's
-programme numbers, anything the directory already lists, the active programme, a running or editing NC and text the NC
-would reject before a byte goes out, and reads the file back afterwards. ``delete_program(number)`` (Delete-File, 938914
-§4.14, ``F5/46``) removes one part programme behind ``Action.DELETE_PROGRAM`` with the same refusals (verified 2026-09-26).
-``cycle_start`` (UNI-TE Run, 938914 §4.9: CYCLE START in the current mode, ``False`` on the NC's refusal) was
-verified 2026-09-26 in MDI: a ``G4 F2`` dwell ran, a ``G0 X2000`` block moved the machine; ``read_cycle_in_progress``
-reads ``%R3.2`` E_CYCLE. ``cycle_stop`` (UNI-TE Stop, 938914 §4.10: the CYHLD machining stop, the spindle keeps turning,
-``cycle_start`` resumes; alias ``feed_stop``) was verified the same evening; ``read_cycle_stopped`` reads ``%R3.1`` E_ARUS.
-``shutdown`` is untested.
+* ``mirror``, ``get_unit_identification``, ``get_unit_status`` (NC and PLC state, segment 153), ``get_available_bytes_in_ram``,
+  ``get_stations_managed_by_master``, ``get_unit_fault_history``
+* ``read_object`` / ``read_mode`` - NC objects (938914 §4.1.3)
+* ``read_ladder`` - PLC variables ``%M %V %I %Q %R %W %S`` as bit, byte, word or long word
+* ``read_directory``, ``read_program``, ``read_machine_parameters``, ``read_plc_archive``, ``read_macros``,
+  ``read_axis_calibration`` - the files of the NC RAM (938914 §4.13, §4.16), all of them behind ``poetry run backup``
+* ``read_cycle_in_progress`` (``%R3.2``), ``read_cycle_stopped`` (``%R3.1``), ``read_vacuum_pump``,
+  ``read_extraction_hood``, ``read_long_workpiece``, ``read_wide_workpiece``
 
-Writes are locked by default: ``write_ladder``, ``write_object`` and ``write_mode`` raise ``WriteNotAllowed``
-unless ``UnitelwayClient(writable={...})`` named the ladder segment (``"%W"``, where ``%W3.2`` is NC start),
-the variable (``"%W16.B"``) or the NC object (``Object.MODE_SELECTION``); ``ALL_LADDER_SEGMENTS`` and
-``ALL_NC_OBJECTS`` open everything except ``cycle_start``, which needs ``Action.CYCLE_START`` named explicitly.
+Writes and actions, each locked until ``UnitelwayClient(writable={...})`` names it
+
+* ``write_mode`` (``Object.MODE_SELECTION``), ``write_object``, ``write_ladder`` (a segment such as ``"%W"`` or a
+  variable such as ``"%W16.B"``; ``%W3.2`` is NC start), ``write_message`` (the NC screen)
+* ``write_vacuum_pump``, ``write_extraction_hood``, ``write_long_workpiece``, ``write_wide_workpiece`` - the panel
+  latches ``%Q0700.6``, ``%Q0100.3``, ``%Q0100.4``, ``%Q0101.4``
+* ``cycle_start`` (``Action.CYCLE_START``): UNI-TE Run, starts what the NC would start on CYCLE START;
+  ``cycle_stop`` (``Action.CYCLE_STOP``): the CYHLD machining stop, the spindle keeps turning
+* ``write_program`` (``Action.WRITE_PROGRAM``): stores one part programme (938914 §4.12) and reads it back;
+  ``delete_program`` (``Action.DELETE_PROGRAM``): Delete-File (§4.14). Both refuse IMA's programme numbers and
+  ``%9000`` upward, a running or editing NC and the active programme before anything is sent, and
+  ``write_program`` never writes to a number the directory lists.
+
+``ALL_LADDER_SEGMENTS`` and ``ALL_NC_OBJECTS`` open every ladder segment and NC object; the ``Action`` locks must
+always be named explicitly.
 
 .. toctree::
    :maxdepth: 2
@@ -76,11 +66,10 @@ Quick start
     client.disconnect_socket()
 
 Scripts: ``poetry run listen`` receives only and lists the link addresses the master polls;
-``poetry run test`` is a minimal tour of every request (the mode round-trip, a scratch byte on unnamed ``%V``
-memory and a screen message are its only writes); ``poetry run panel`` renders the machine's operator panel (buttons, lamps, key
+``poetry run test`` is a tour of every request, writes commented out; ``poetry run panel`` renders the machine's operator panel (buttons, lamps, key
 switch, potentiometers) from ``%I0100``-``%I0104`` / ``%Q0100``-``%Q0102``, read-only, ``--watch 1``
 to refresh; ``poetry run backup`` writes a full backup (every part programme, the machine parameters, the PLC
-archive) into ``example/backup/<timestamp>/``.
+archive, macros, axis calibration) into ``example/backup/<timestamp>/``.
 
 Setup
 =====

@@ -21,7 +21,7 @@ from pyunitelway.constants import (
 from pyunitelway.errors import (
     NoPollingWindow,
     NoUniteResponse,
-    UnexpectedAdditionalAwnserCode,
+    UnexpectedAdditionalAnswerCode,
     UnexpectedDataLength,
     UnexpectedUniteResponse,
     UniteRequestFailed,
@@ -77,7 +77,7 @@ class TestCheckSpecificAnswer:
             check_specific_answer([0xFE], READ_MEMORY_FREE)
 
     def test_rejects_other_requests_additional_code(self):
-        with pytest.raises(UnexpectedAdditionalAwnserCode):
+        with pytest.raises(UnexpectedAdditionalAnswerCode):
             check_specific_answer([0xF5, 0x96, 0x00], READ_MEMORY_FREE)
 
     def test_additional_fd_is_the_negative_report(self):

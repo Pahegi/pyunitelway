@@ -1,13 +1,6 @@
-"""Answers captured from the real NUM 1060 Series II UC SII (Makerspace Darmstadt).
-
-Captured 2026-09-22 with ``example/test.py`` at debug=2 (``example/logs/test-20260922-202236.log``):
-USR-TCP232-306 at 10.1.70.202:8234, this client at link address 0x01 (the only address the master
-polls), NC idle in AUTO, programme %9001 selected, PLC running. The mode round-trip vectors are from
-``example/logs/test-20260922-220419.log`` (write MANUAL, read back, write AUTO); the panel bytes are
-from ``example/logs/panel-20260922-221429.log`` (``poetry run panel``); the other-segment reads
-from ``example/logs/test-20260922-222640.log`` (``poetry run test --read-only``). Each vector is the complete
-UNI-TELWAY frame as received, so these pin the whole unwrap + parse path against what the machine
-actually sends - not against the manual.
+"""Frames captured from the real NUM 1060 Series II UC SII in Darmstadt, complete as received, so the whole
+unwrap and parse path is pinned to what the machine sends rather than to the manual. Each block names its log
+in ``example/logs/``. Link address 0x01, NC idle in AUTO unless noted.
 """
 
 import pytest
@@ -19,10 +12,8 @@ from pyunitelway.num_constants import Mode, Program
 from pyunitelway.utils import check_specific_answer, file_identification
 from pyunitelway.unite_responses import (
     parse_available_bytes_in_ram,
-    parse_delete_file,
     parse_directory,
-    parse_download_close,
-    parse_download_open,
+    check_status,
     parse_download_segment,
     parse_upload_segment,
     parse_ladder_read_response,
@@ -471,15 +462,15 @@ UPLOAD_7778_SEGMENT = frame("10 02 01 1f 20 00 fe 00 00 00 6e 0f 01 00 13 00 4e 
 def test_download_frames_as_sent_and_answered():
     c = UnitelwayClient()
     assert c._xway_to_unitelway(c._unite_to_xway([0x3A, 0x00] + file_identification(0x12, 77770))) == DOWNLOAD_OPEN_7777_TX
-    assert parse_download_open(unwrap_unite_response(DOWNLOAD_OPEN_OK)) == 0
+    assert check_status("OPEN_DOWNLOAD", unwrap_unite_response(DOWNLOAD_OPEN_OK)[1]) == 0
     with pytest.raises(FileTransferError, match="file already exists"):
-        parse_download_open(unwrap_unite_response(DOWNLOAD_OPEN_EXISTS))
+        check_status("OPEN_DOWNLOAD", unwrap_unite_response(DOWNLOAD_OPEN_EXISTS)[1])
     segment = b"N10 G4 F1\r\nN20 M2\r\n"
     query = [0x3B, 0x00, 0x01, 0x00, len(segment), 0x00] + list(segment)
     assert c._xway_to_unitelway(c._unite_to_xway(query)) == DOWNLOAD_SEGMENT_7778_TX
     assert parse_download_segment(unwrap_unite_response(DOWNLOAD_SEGMENT_ANSWER), 1) == 0
     assert c._xway_to_unitelway(c._unite_to_xway([0x3C, 0x00])) == DOWNLOAD_CLOSE_TX
-    assert parse_download_close(unwrap_unite_response(DOWNLOAD_CLOSE_OK)) == 0
+    assert check_status("CLOSE_DOWNLOAD", unwrap_unite_response(DOWNLOAD_CLOSE_OK)[1], (0, 4)) == 0
 
 
 # 2026-09-26 20:55 (todo.md K step 5): a segment whose last block has no CR LF is accepted, and the close then answers
@@ -489,7 +480,7 @@ DOWNLOAD_CLOSE_DELETED = frame("10 02 01 08 20 00 fe 00 00 00 6c 0b b0")
 
 def test_download_close_deleted_the_file():
     with pytest.raises(FileTransferError, match="did not end with LF"):
-        parse_download_close(unwrap_unite_response(DOWNLOAD_CLOSE_DELETED))
+        check_status("CLOSE_DOWNLOAD", unwrap_unite_response(DOWNLOAD_CLOSE_DELETED)[1], (0, 4))
 
 
 # 2026-09-26 20:57 (todo.md K): Delete-File F5/46 for the empty %7777.0 (index 77770) answered F5 76 00 and the
@@ -503,4 +494,4 @@ def test_delete_file_frames():
     assert c._xway_to_unitelway(c._unite_to_xway([0xF5, 0x00, 0x46] + file_identification(0x12, 77770)[:4])) == DELETE_7777_TX
     unite = unwrap_unite_response(DELETE_ANSWER)
     check_specific_answer(unite, 0x46)
-    assert parse_delete_file(unite) == 0
+    assert check_status("DELETE_FILE", unite[2]) == 0

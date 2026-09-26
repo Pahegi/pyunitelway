@@ -10,7 +10,7 @@ ENQ = 0x05
 ACK = 0x06
 NAK = 0x15
 
-# UNI-TE request codes (938914 §3.5); drip-feed download (type H'0C'), Init and CLEAR_CPT are not implemented
+# UNI-TE request codes (938914 §3.5); Init and Clear-CPT are not implemented
 READ_OBJECTS = 0x36
 WRITE_OBJECTS = 0x37
 UNSOLICITED_DATA = 0xFC
@@ -29,8 +29,7 @@ CLOSE_UPLOAD = 0x3F
 RUN = 0x24  # 938914 §4.9: starts an NC cycle in the current mode (RUN_AUTOMATE below starts the PLC tasks instead)
 STOP = 0x25  # 938914 §4.10: FEED STOP, spindles unaffected (STOP_AUTOMATE below stops the PLC tasks instead)
 
-# NUM specific requests (938914 §3.6; 938928 §10.4): request H'F5' + additional request code,
-# answer H'F5' + additional answer code (= request code + 0x30), then status/data
+# NUM specific requests (938914 §3.6; 938928 §10.4): F5 + additional code, answered F5 + code + 0x30
 SPECIFIC_REQUEST = 0xF5
 
 DELETE_FILE = 0x46
@@ -59,8 +58,8 @@ ADDITIONAL_ANSWER_CODES = {
     SHUTDOWN: 0x96,
 }
 
-# File transfer status byte (938914 §4.13, §4.16); 0 and 15 are the good ones
-FILE_STATUS = {
+# Status byte meanings by request (938914 §4.12-§4.16); 0 is always "request executed"
+FILE_STATUS = {  # upload and directory
     0: "request executed",
     2: "other programme being uploaded or edited",
     4: "no file open, or already closed",
@@ -72,9 +71,13 @@ FILE_STATUS = {
     25: "sequence error",
     28: "system error",
 }
-
-# Download status bytes per request (938914 §4.12.1-§4.12.3); only 0 goes on, close 4 = nothing was open
-DOWNLOAD_STATUS = {
+STATUS_MEANING = {
+    "OPEN_UPLOAD": FILE_STATUS,
+    "READ_UPLOAD": FILE_STATUS,
+    "CLOSE_UPLOAD": FILE_STATUS,
+    "OPEN_DIRECTORY": FILE_STATUS,
+    "DIRECTORY": FILE_STATUS,
+    "CLOSE_DIRECTORY": FILE_STATUS,
     "OPEN_DOWNLOAD": {
         0: "request executed",
         1: "file already exists",
@@ -104,17 +107,15 @@ DOWNLOAD_STATUS = {
         20: "other file being downloaded, sender error",
         28: "system error",
     },
+    "DELETE_FILE": {
+        0: "request executed",
+        2: "request rejected, operation in the programme area",
+        5: "request rejected, no such file",
+        10: "request rejected, programme or subroutine being executed, PLC status incompatible with file deletion",
+    },
 }
 
-# Delete-File status byte (938914 §4.14): F5 / 76 / status
-DELETE_STATUS = {
-    0: "request executed",
-    2: "request rejected, operation in the programme area",
-    5: "request rejected, no such file",
-    10: "request rejected, programme or subroutine being executed, PLC status incompatible with file deletion",
-}
-
-# Response codes
+# Answer codes (938914 §3); everything else is request code + 0x30
 RESPONSE_CODES = {
     READ_OBJECTS: 0x66,
     WRITE_OBJECTS: 0xFE,
@@ -135,8 +136,7 @@ RESPONSE_CODES = {
     SPECIFIC_REQUEST: 0xF5,  # then check ADDITIONAL_ANSWER_CODES (utils.check_specific_answer)
 }
 
-# Ladder adresses
-# for UnitelwayClient(writable=...)
+# Ladder segments (938914 §4.1.3.3); ALL_LADDER_SEGMENTS is for UnitelwayClient(writable=...)
 ALL_LADDER_SEGMENTS = frozenset({"%M", "%V", "%S", "%R", "%W", "%I", "%Q"})
 
 LADDER_REQUEST = {

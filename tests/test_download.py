@@ -9,7 +9,7 @@ from pyunitelway.client import UnitelwayClient
 from pyunitelway.constants import ALL_LADDER_SEGMENTS, CLOSE_DOWNLOAD, OPEN_DOWNLOAD, RESPONSE_CODES, WRITE_DOWNLOAD
 from pyunitelway.errors import FileTransferError, ProgramNotVerified, ProgramRefused, WriteNotAllowed
 from pyunitelway.num_constants import ALL_NC_OBJECTS, IMA_PROGRAM_NUMBERS, Action, Mode, Program
-from pyunitelway.unite_responses import parse_download_close, parse_download_open, parse_download_segment
+from pyunitelway.unite_responses import check_status, parse_download_segment
 from pyunitelway.utils import download_segments, file_identification, program_blocks
 
 from test_client import client_answering
@@ -83,11 +83,11 @@ class TestParsers:
         assert file_identification(0x12, 321) == OPEN_32_1[2:]
 
     def test_open(self):
-        assert parse_download_open([0x6A, 0]) == 0
+        assert check_status("OPEN_DOWNLOAD", 0) == 0
         with pytest.raises(FileTransferError, match="file already exists"):
-            parse_download_open([0x6A, 1])
+            check_status("OPEN_DOWNLOAD", 1)
         with pytest.raises(FileTransferError, match="128 bytes"):
-            parse_download_open([0x6A, 3])
+            check_status("OPEN_DOWNLOAD", 3)
 
     def test_segment(self):
         assert parse_download_segment([0x6B, 0, 0x02, 0x00], 2) == 0  # §4.12.4.3
@@ -99,10 +99,10 @@ class TestParsers:
             parse_download_segment([0x6B, 25, 0x01, 0x00], 1)
 
     def test_close(self):
-        assert parse_download_close([0x6C, 0]) == 0
-        assert parse_download_close([0x6C, 4]) == 4
+        assert check_status("CLOSE_DOWNLOAD", 0, (0, 4)) == 0
+        assert check_status("CLOSE_DOWNLOAD", 4, (0, 4)) == 4
         with pytest.raises(FileTransferError, match="deleted"):
-            parse_download_close([0x6C, 11])
+            check_status("CLOSE_DOWNLOAD", 11, (0, 4))
 
 
 class TestWriteProgram:
@@ -141,7 +141,7 @@ class TestWriteProgram:
     @pytest.mark.parametrize("number", [0, 9000, 9001, 9997, 5, 101, 609, 8999 + 1])
     def test_protected_numbers_send_nothing(self, number):
         sent = []
-        with pytest.raises(ProgramRefused, match="never written"):
+        with pytest.raises(ProgramRefused, match="never touched"):
             download_client(sent=sent).write_program(number, PROGRAM)
         assert sent == []
         assert 5 in IMA_PROGRAM_NUMBERS and 9997 not in IMA_PROGRAM_NUMBERS  # 9997 falls to the range check
@@ -238,7 +238,7 @@ class TestDeleteProgram:
     @pytest.mark.parametrize("number", [0, 9000, 9001, 9997, 5, 101, 609])
     def test_protected_numbers_send_nothing(self, number):
         sent = []
-        with pytest.raises(ProgramRefused, match="never deleted"):
+        with pytest.raises(ProgramRefused, match="never touched"):
             delete_client(sent=sent, directory_before=[Program(number, 0, 10)]).delete_program(number)
         assert sent == []
 

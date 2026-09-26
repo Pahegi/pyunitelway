@@ -1,77 +1,25 @@
-"""Utilities functions module.
-"""
+"""Byte helpers: framing, checksums, ladder and object encoding, file identification."""
 
 import operator
-import time
 
 from .constants import *
 from .num_constants import Mode, ladder_size, ladder_specific
-from .errors import MalformedUnitelwayResponse, UnexpectedAdditionalAwnserCode, UnexpectedUniteResponse, UniteRequestFailed
+from .errors import MalformedUnitelwayResponse, UnexpectedAdditionalAnswerCode, UnexpectedUniteResponse, UniteRequestFailed
 
 
 
-def format_bytearray(ba):
-    """Format ``bytearray`` bytes in hexadecimal.
-    
-    Bytes are space-separated.
-    
-    :param bytearray ba: Bytes to format
-    :returns: Bytes as string
-    :rtype: str
-    """
-    hex_s = ba.hex()
-
-    result = ""
-    for i, c in enumerate(hex_s):
-        result += c
-
-        if i % 2 == 1 and i < len(hex_s) - 1:
-            result += ' '
-
-    return result
-
-
-def format_hex_list(list):
-    """Format a list of bytes in hexadecimal.
-    
-    Bytes are space-separated.
-    
-    :param list[int] list: List of bytes
-    :returns: Bytes as string
-    :rtype: str
-    """
-    return format_bytearray(bytearray(list))
+def format_hex_list(data):
+    """``[0x10, 0x02]`` -> ``"10 02"``."""
+    return " ".join(f"{b:02x}" for b in data)
 
 
 def get_response_code(query_code):
-    """Return the UNI-TE response code that corresponds to a request code.
-    
-    | For reading and IO writing requests: response code = ``request code + 0x30``.
-    | For other writing requests: response code = ``0xFE``.
-
-    :param int query_code: Request code of which we want the response code
-
-    :returns: The corresponding response code
-    :rtype: Union[int, list[int]]
-    """
-    if query_code in RESPONSE_CODES.keys():
-        return RESPONSE_CODES[query_code]
-
-    return query_code + 0x30
+    """Answer code of a request: ``RESPONSE_CODES`` or request code + 0x30 (938914 §3)."""
+    return RESPONSE_CODES.get(query_code, query_code + 0x30)
 
 
 def is_valid_response_code(query_code, resp_code):
-    """Check if a UNI-TE response code is valid.
-
-    A code is valid if it's ``0xFD`` (request failed), ``request code + 0x30`` or ``0xFE``.
-    Other response codes can be received because of conflicts (e.g. receive response for another request).
-
-    :param Union[int, list[int]] query_code: Request code
-    :param Union[int, list[int]] resp_code: Received response code
-
-    :returns: True if the code is valid
-    :rtype: bool
-    """
+    """``True`` for the request's answer code or the ``0xFD`` negative report."""
     return resp_code == 0xFD or resp_code == get_response_code(query_code)
 
 
@@ -141,19 +89,13 @@ def file_identification(file_type, identification=0):
 
 
 def check_specific_answer(response, additional_request, also_accept=()):
-    """Validate the answer of a NUM specific request (938914 §3.6).
+    """Check a NUM specific answer ``F5 / additional code`` (938914 §3.6).
 
-    These requests all use request code ``H'F5'`` and answer with ``H'F5'`` followed by
-    an *additional answer code* that identifies the request (``ADDITIONAL_ANSWER_CODES``).
-    An additional code of ``H'FD'`` is the negative report (938914 §4.17).
-
-    :param list[int] response: UNI-TE answer bytes, starting at the answer code
-    :param int additional_request: Additional request code that was sent (e.g. ``READ_MEMORY_FREE``)
-    :param tuple[int] also_accept: Further additional answer codes to accept (manual contradictions)
-
-    :raises UnexpectedUniteResponse: The answer code is not ``H'F5'``
-    :raises UniteRequestFailed: Additional answer code ``H'FD'``
-    :raises UnexpectedAdditionalAwnserCode: The additional answer code belongs to another request
+    :param int additional_request: The additional request code sent, e.g. ``READ_MEMORY_FREE``
+    :param tuple[int] also_accept: Other additional answer codes to accept where the manual contradicts itself
+    :raises UnexpectedUniteResponse: Answer code is not ``F5``
+    :raises UniteRequestFailed: Additional code ``FD``, the negative report
+    :raises UnexpectedAdditionalAnswerCode: Another request's code
     """
     if response[0] != SPECIFIC_REQUEST:
         raise UnexpectedUniteResponse(SPECIFIC_REQUEST, response[0])
@@ -162,34 +104,7 @@ def check_specific_answer(response, additional_request, also_accept=()):
     if got == 0xFD:
         raise UniteRequestFailed()
     if got != expected and got not in also_accept:
-        raise UnexpectedAdditionalAwnserCode(expected, got)
-
-
-
-def split_list_n(list, n):
-    """Split a list each ``n`` elements.
-
-    :param list list: List to split
-    :param int n: Number of elements in each sub-sequence
-
-    :returns: Splitted list
-    :rtype: list[list]
-    """
-    splitted = []
-    word = []
-    try:
-        for i, b in enumerate(list):
-            if i % n == 0:
-                if len(word) > 0:
-                    splitted.append(word)
-                word = []
-            word.append(b)
-            if i == len(list) - 1:
-                splitted.append(word)
-    except Exception:
-        raise (Exception("split_list_n function error !"))
-
-    return splitted
+        raise UnexpectedAdditionalAnswerCode(expected, got)
 
 
 def compute_response_length(unitelway):
@@ -234,159 +149,56 @@ def compute_response_length(unitelway):
 
 
 def duplicate_dle(unitelway, start_index):
-    """Duplicate ``<DLE>``'s in a UNI-TELWAY request, before sending it.
-
-    This function modifies directly the input message.
-
-    ``<DLE>`` bytes (``0x10``) are duplicated if:
-
-    * the message length (4th byte) equals ``<DLE>``
-    * or ``<DLE>`` is contained in the data section.
-
-    The length is calculated before duplicating ``<DLE>``'s.
-
-    The ``start_index`` is the first data byte index. It's useful when the length equals ``<DLE>``, because all the message is shifted.
-
-    :param list[int] unitelway: UNI-TELWAY bytes
-    :param int start_index: First data byte index
-    """
+    """Double every ``<DLE>`` from ``start_index`` on, in place (35000789 §3.5); the length byte is handled by the caller."""
     i = start_index
     while i < len(unitelway):
-        c = unitelway[i]
-        if c == DLE:
-            unitelway.insert(i, c)
-            i += 1  # skip the duplicated DLE
-
+        if unitelway[i] == DLE:
+            unitelway.insert(i, DLE)
+            i += 1
         i += 1
 
 
 def delete_dle(unitelway):
-    """Delete duplicated ``<DLE>`` characters in a UNI-TELWAY response.
-
-    :param list[int] unitelway: UNI-TELWAY bytes
-
-    :returns: New UNI-TELWAY message without duplicated ``<DLE>``'s
-    :rtype: list[int]    
-    """
+    """Undo the ``<DLE>`` doubling of a received frame; header and BCC are copied as they are."""
     result = unitelway[:3]
-    bytes_length = len(unitelway)
-
     i = 3
-    while i < bytes_length - 1:
-        b = unitelway[i]
-        if b != DLE:
-            result.append(b)
-        else:
-            # Insert second DLE
-            try:
-                result.append(unitelway[i + 1])
-            except:
-                pass
-
-            i += 1  # skip duplicated DLE
-
+    while i < len(unitelway) - 1:
+        result.append(unitelway[i])
+        if unitelway[i] == DLE:
+            i += 1  # skip the doubled one
         i += 1
-
-    result.append(unitelway[bytes_length - 1])
-
+    result.append(unitelway[-1])
     return result
 
 
 def compute_bcc(unitelway_bytes):
-    """Compute a UNI-TELWAY message checksum.
-
-    The checksum is the sum of all bytes modulo 256. It's computed after ``<DLE>``'s duplication.
-    
-    :param list[int] unitelway_bytes: UNI-TELWAY message
-    
-    :returns: Sum of all bytes modulo 256
-    :rtype: int
-    """
+    """Checksum: the sum of all bytes modulo 256, taken after the ``<DLE>`` doubling (35000789 §3.5)."""
     return sum(unitelway_bytes) % 256
 
 
 def check_unitelway(response):
-    """Check if a received UNI-TELWAY message is valid using its checksum.
-    
-    This function computes the checksum, and checks if it equals the received message checksum.
-
-    :param list[int] response: UNI-TELWAY message to check
-
-    :returns: ``True`` if the checksum is good. ``False`` otherwise
-    :rtype: bool
-    """
-    bcc = compute_bcc(response[:-1])
-    return bcc == response[-1]
+    """``True`` if the frame's last byte is its checksum."""
+    return compute_bcc(response[:-1]) == response[-1]
 
 
 def read_byte(data):
-    """Read a byte from a list of bytes.
-
-    The byte is removed from the list.
-
-    :param list[int] data: List of bytes
-
-    :returns: Read byte as int
-    :rtype: int
-    """
+    """Pop one byte from the front of ``data``."""
     return data.pop(0)
 
 
 def read_word(data):
-    """Read a word (2 bytes) from a list of bytes.
-
-    The word is removed from the list.
-
-    :param list[int] data: List of bytes
-
-    :returns: Read word as int
-    :rtype: int
-    """
-    return data.pop(0) + data.pop(0) * 256
+    """Pop a little-endian word from the front of ``data``."""
+    return read_int([read_byte(data) for _ in range(2)])
 
 
 def read_dword(data):
-    """Read a double word / long word (4 bytes) from a list of bytes.
-
-    The double word is removed from the list.
-
-    :param list[int] data: List of bytes
-
-    :returns: Read double word as int
-    :rtype: int
-    """
-    return data.pop(0) + data.pop(0) * 256 + data.pop(0) * 65536 + data.pop(0) * 16777216
-
-
-def read_bytes(data, n):
-    """Read a list of bytes from a list of bytes.
-
-    The bytes are removed from the list.
-
-    :param list[int] data: List of bytes
-    :param int n: Number of bytes to read
-
-    :returns: Read bytes
-    :rtype: list[int]
-    """
-    result = []
-    for _ in range(n):
-        result.append(data.pop(0))
-
-    return result
+    """Pop a little-endian long word from the front of ``data``."""
+    return read_int([read_byte(data) for _ in range(4)])
 
 
 def read_int(data):
-    """Read an integer with variable number of bytes from a list of bytes.
-
-    :param list[int] data: List of bytes
-
-    :returns: Read integer
-    :rtype: int
-    """
-    return int.from_bytes(data, byteorder='little')
-
-
+    """Little-endian integer from a list of bytes."""
+    return int.from_bytes(data, "little")
 def program_blocks(text):
     """Split a part programme into blocks for Write-Download-Segment and refuse what the NC would refuse or store wrong
     (938914 §4.12.2-§4.12.3): printable ASCII only, every block ends with CR LF, no block over 120 characters, no empty

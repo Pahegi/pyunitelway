@@ -2,19 +2,17 @@
 
 import pytest
 
-from pyunitelway.errors import OperationInProgrammeArea, UnexpectedAdditionalAwnserCode, UnexpectedDataLength, UnexpectedObjectTypeResponse
+from pyunitelway.errors import OperationInProgrammeArea, UnexpectedAdditionalAnswerCode, UnexpectedDataLength, UnexpectedObjectTypeResponse
 from pyunitelway.num_constants import Mode
 from pyunitelway.unite_responses import (
     parse_available_bytes_in_ram,
     parse_ladder_read_response,
     parse_ladder_variable,
     parse_mirror_result,
-    parse_shutdown_result,
     parse_stations_managed_by_master,
     parse_unit_fault_history,
     parse_unit_identification,
     parse_unit_status,
-    parse_write_result,
 )
 
 
@@ -30,7 +28,7 @@ class TestParseAvailableBytesInRam:
         assert parse_available_bytes_in_ram([0xF5, 0x77, 0x00, 0x34, 0x12, 0x00, 0x00]) == 0x1234
 
     def test_wrong_additional_answer_code_raises(self):
-        with pytest.raises(UnexpectedAdditionalAwnserCode):
+        with pytest.raises(UnexpectedAdditionalAnswerCode):
             parse_available_bytes_in_ram([0xF5, 0x42, 0x00, 0x00, 0x00, 0x00, 0x00])
 
     def test_operation_in_programme_area_raises(self):
@@ -41,11 +39,6 @@ class TestParseAvailableBytesInRam:
 def test_parse_mirror_result():
     assert parse_mirror_result([0x01, 0x10, 0x04], [0x01, 0x10, 0x04]) is True
     assert parse_mirror_result([0x01, 0x10, 0x05], [0x01, 0x10, 0x04]) is False
-
-
-def test_parse_write_result():
-    assert parse_write_result([0xFE]) is True
-    assert parse_write_result([0x66]) is False
 
 
 class TestParseLadderVariable:
@@ -121,12 +114,6 @@ def test_parse_unit_identification():
 def test_parse_unit_fault_history():
     r = [0xD2, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00, 0x04, 0x01]
     assert parse_unit_fault_history(r) == (1, 2, 3, 0x0104)
-
-
-def test_parse_shutdown_result():
-    # 938928 §10.4.10: F5 / 96 / status (00 done, 1C refused)
-    assert parse_shutdown_result([0xF5, 0x96, 0x00]) is True
-    assert parse_shutdown_result([0xF5, 0x96, 0x1C]) is False
 
 
 class TestParseStationsManagedByMaster:
