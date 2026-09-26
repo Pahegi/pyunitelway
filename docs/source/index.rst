@@ -23,9 +23,10 @@ Verified 2026-09-23: ``write_ladder`` (a ``%W`` byte written and restored; bit a
 ``%V`` memory, each read back), ``write_message`` (938914 §4.17; the NC lists it under E/A →
 Fehlermeldungen → Netz-Meldungen, no acknowledgement) and a ``%Q`` output: ``write_vacuum_pump(True)`` writes
 ``%Q0700.6`` and starts the vacuum pump, ``False`` stops it (the coolant pump runs with it); ``read_vacuum_pump``.
-Built the same way but not yet sent: ``write_extraction_hood`` (``%Q0100.3``, ``False`` lowers the hood),
-``write_long_workpiece`` (``%Q0100.4``) and ``write_wide_workpiece`` (``%Q0101.4``), each with a ``read_`` twin. File reading (938914 §4.13/§4.16) verified on the machine 2026-09-26:
-``read_directory``, ``read_program``, ``read_machine_parameters``, ``read_plc_archive`` (bytes; the NC's single
+The panel latches ``write_extraction_hood`` (``%Q0100.3``, ``True`` lifted the hood), ``write_long_workpiece``
+(``%Q0100.4``) and ``write_wide_workpiece`` (``%Q0101.4``) were verified 2026-09-26, each with a ``read_`` twin. File reading (938914 §4.13/§4.16) verified on the machine 2026-09-26:
+``read_directory``, ``read_program``, ``read_machine_parameters``, ``read_plc_archive`` (plus ``read_macros``, file type
+H'03', the resident-macro areas, and ``read_axis_calibration``, H'02', both verified 2026-09-26 and empty on this machine) (bytes; the NC's single
 transfer slot is closed in every case - the ladder archive is the one type the NC does not close itself), driven by
 ``poetry run backup``. No download, no Delete-File.
 ``cycle_start`` (UNI-TE Run, 938914 §4.9: CYCLE START in the current mode, ``False`` on the NC's refusal) was

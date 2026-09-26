@@ -36,6 +36,8 @@ class TestFileIdentification:
         assert file_identification(FileType.PART_PROGRAM, program_index(146, 1)) == OPEN_146_1[2:]
         assert file_identification(FileType.PLC_LADDER, PLC_ALL_MODULES << 16) == [0x00, 0x00, 0x10, 0x07, 0, 0, 0, 0]
         assert file_identification(FileType.MACHINE_PARAMETERS) == [0, 0, 0, 0x05, 0, 0, 0, 0]
+        assert file_identification(FileType.MACROS) == [0, 0, 0, 0x03, 0, 0, 0, 0]  # §4.13.1: not significant
+        assert file_identification(FileType.AXIS_CALIBRATION) == [0, 0, 0, 0x02, 0, 0, 0, 0]
 
     def test_bounds(self):
         with pytest.raises(ValueError):
@@ -103,7 +105,9 @@ class TestUpload:
         c.run_unite = run
         assert c.read_machine_parameters(timeout=30) == b""
         assert c.read_plc_archive(timeout=30) == b""
-        assert [q[2:6] for q, _ in calls if q[0] == 0x3D] == [[0, 0, 0, 0x05], [0, 0, 0x10, 0x07]]
+        assert c.read_macros(timeout=30) == b""
+        assert c.read_axis_calibration(timeout=30) == b""
+        assert [q[2:6] for q, _ in calls if q[0] == 0x3D] == [[0, 0, 0, 0x05], [0, 0, 0x10, 0x07], [0, 0, 0, 0x03], [0, 0, 0, 0x02]]
         assert {t for _, t in calls} == {30}
 
     def test_full_segment_frame_on_the_wire(self):

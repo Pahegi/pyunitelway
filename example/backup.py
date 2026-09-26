@@ -7,7 +7,9 @@ Usage::
     poetry run backup [--out DIR] [--timeout S]   # only after Paul approved the run
 
 Output in example/backup/<timestamp>/ (gitignored): directory.txt, one file per programme (101.0, 9001.0, ...),
-maschpar.xpa, archiev.xar. DEBUG log with every wire byte in example/logs/.
+maschpar.xpa, archiev.xar, macros.bin (H'03', the resident-macro areas 1-3; 92 bytes of empty headers while P95 is
+0 0 0) and axis-calibration.txt (H'02', the .xpa text format; header and trailer only while no calibration table is
+stored). Verified 2026-09-26. DEBUG log with every wire byte in example/logs/.
 """
 
 import argparse
@@ -18,7 +20,7 @@ from functools import partial
 from pathlib import Path
 
 from pyunitelway import UnitelwayClient
-from pyunitelway.errors import FileTransferError
+from pyunitelway.errors import FileTransferError, UniteRequestFailed
 from pyunitelway.num_constants import Mode
 
 ADAPTER = ("10.1.70.202", 8234)
@@ -53,11 +55,13 @@ def backup(client, out, timeout):
     files = {p.name.lstrip("%"): partial(client.read_program, p.number, p.group, timeout) for p in programs}
     files["maschpar.xpa"] = partial(client.read_machine_parameters, timeout)
     files["archiev.xar"] = partial(client.read_plc_archive, timeout)
+    files["macros.bin"] = partial(client.read_macros, timeout)
+    files["axis-calibration.txt"] = partial(client.read_axis_calibration, timeout)
     failed = 0
     for name, read in files.items():
         try:
             data = read()
-        except FileTransferError as e:
+        except (FileTransferError, UniteRequestFailed) as e:  # status refusal, or the NC's FD on a request it rejects
             log.error("%s: %s", name, e)
             failed += 1
             continue

@@ -393,3 +393,54 @@ def test_plc_archive_upload_with_dle_in_file_id_and_segment_number():
     assert (status, len(data)) == (15, 89)
     assert 911 * 122 + 89 == 111231
     assert unwrap_unite_response(ARCHIVE_CLOSE_ANSWER) == [0x6F, 0x00]  # a real close, unlike the other types
+
+
+# 2026-09-26 20:07, ``poetry run test`` ``panel_latches()`` (``example/logs/test-20260926-200733.log``): the panel
+# latches %Q0100.4 QLBL_WKEIN "Langes Werkstück" and %Q0101.4 QLBB_WKEIN "Überbreites Werkstück" written as bits,
+# each answered FE and read back; nothing moved (no machining side %V7FB.0-.3, nothing clamped, pump off).
+LATCH_LONG_OFF_TX = frame("10 02 01 0f 20 00 fe 00 00 00 37 00 a9 04 00 01 01 00 00 26")
+LATCH_WIDE_ON_TX = frame("10 02 01 0f 20 00 fe 00 00 00 37 00 a9 04 01 01 01 00 01 28")
+LATCH_WRITE_ANSWER = frame("10 02 01 07 20 00 fe 00 00 00 fe 36")
+
+
+def test_panel_latch_writes():
+    c = UnitelwayClient(writable={"%Q0100.4", "%Q0101.4"})
+    assert c._xway_to_unitelway(c._unite_to_xway([0x37, 0x00, 0xA9, 4, 0x00, 0x01, 0x01, 0x00, 0x00])) == LATCH_LONG_OFF_TX
+    assert c._xway_to_unitelway(c._unite_to_xway([0x37, 0x00, 0xA9, 4, 0x01, 0x01, 0x01, 0x00, 0x01])) == LATCH_WIDE_ON_TX
+    assert unwrap_unite_response(LATCH_WRITE_ANSWER) == [0xFE]
+
+
+# 2026-09-26 20:24, ``read_macros(timeout=10)`` (``example/logs/backup-macros-20260926-202415.log``): file type H'03'
+# opened with status 0, one segment with status 15 and 92 bytes, close answered 4 (the NC closes this type itself).
+# Content: three 29-byte records ``%00`` + 4 zero bytes + 20 opaque bytes + ``13 00``, then ``%99 CR LF``.
+MACROS_OPEN_TX = frame("10 02 01 10 10 20 00 fe 00 00 00 3d 00 00 00 00 03 00 00 00 00 91")
+MACROS_OPEN_ANSWER = frame("10 02 01 08 20 00 fe 00 00 00 6d 00 a6")
+MACROS_SEGMENT = frame(
+    "10 02 01 68 20 00 fe 00 00 00 6e 0f 01 00 5c 00 25 30 30 00 00 00 00 9c 8b bf bf 94 be 08 9b 99 d5 53 98 21 77 "
+    "6f 6e b3 40 54 40 13 00 25 30 30 00 00 00 00 9c 8b bf 8f 94 6d b1 40 de 19 c6 d4 e7 87 23 2e ec ba 00 c9 13 00 "
+    "25 30 30 00 00 00 00 9c 8b bf 9f 94 86 bd 75 7a 34 08 00 9a 4b 30 f4 dc fa 13 b1 13 00 25 39 39 0d 0a 28")
+MACROS_CLOSE_ANSWER = frame("10 02 01 08 20 00 fe 00 00 00 6f 04 ac")
+
+
+def test_macros_upload():
+    c = UnitelwayClient()
+    assert c._xway_to_unitelway(c._unite_to_xway([0x3D, 0x00, 0, 0, 0, 0x03, 0, 0, 0, 0])) == MACROS_OPEN_TX
+    assert unwrap_unite_response(MACROS_OPEN_ANSWER) == [0x6D, 0]
+    status, data = parse_upload_segment(unwrap_unite_response(MACROS_SEGMENT), 1)
+    assert (status, len(data)) == (15, 92)
+    assert data.count(b"%00") == 3 and data.endswith(b"%99\r\n")
+    assert [len(r) for r in data[:-5].split(b"%00")[1:]] == [26, 26, 26]
+    assert unwrap_unite_response(MACROS_CLOSE_ANSWER) == [0x6F, 4]
+
+
+# 2026-09-26 20:27, ``read_axis_calibration(timeout=10)`` (``example/logs/backup-axcal-20260926-202717.log``): file type
+# H'02', open 0, one segment status 15 with 21 bytes, close 4. Text in the ``.xpa`` format: the software-version header
+# ``%12205000 ;0A`` and the DC3 trailer ``;01``, no calibration entries on this machine.
+AXCAL_OPEN_TX = frame("10 02 01 10 10 20 00 fe 00 00 00 3d 00 00 00 00 02 00 00 00 00 90")
+AXCAL_SEGMENT = frame("10 02 01 21 20 00 fe 00 00 00 6e 0f 01 00 15 00 25 31 32 32 30 35 30 30 30 20 3b 30 41 0d 0a 13 3b 30 31 0d 0a 3d")
+
+
+def test_axis_calibration_upload():
+    c = UnitelwayClient()
+    assert c._xway_to_unitelway(c._unite_to_xway([0x3D, 0x00, 0, 0, 0, 0x02, 0, 0, 0, 0])) == AXCAL_OPEN_TX
+    assert parse_upload_segment(unwrap_unite_response(AXCAL_SEGMENT), 1) == (15, b"%12205000 ;0A\r\n\x13;01\r\n")

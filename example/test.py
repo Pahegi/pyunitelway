@@ -2,22 +2,37 @@
 
 Reads first. The writes at the end are the ones verified harmless on this machine: the mode round-trip, a
 scratch byte on unnamed %V memory, a screen message. Physical actions stay commented out. Every exchange is
-logged as one line with the decoded answer; DEBUG would show every wire byte. Run with the machine idle::
+logged as one line with the decoded answer on the console and with every wire byte in example/logs/. Run with
+the machine idle::
 
     poetry run test
 """
 
 import logging
+import sys
 import time
+from datetime import datetime
+from pathlib import Path
 
 from pyunitelway import UnitelwayClient
 from pyunitelway.num_constants import Action, Mode, Object
 
-logging.basicConfig(level=logging.INFO)
+HERE = Path(__file__).parent
+log = logging.getLogger("test")
 
 
+def setup_logging():
+    """INFO on the console, DEBUG with every wire byte in example/logs/test-<stamp>.log."""
+    (HERE / "logs").mkdir(exist_ok=True)
+    console = logging.StreamHandler(sys.stdout)
+    console.setLevel(logging.INFO)
+    file = logging.FileHandler(HERE / "logs" / f"test-{datetime.now():%Y%m%d-%H%M%S}.log")
+    logging.basicConfig(level=logging.DEBUG, handlers=[console, file], datefmt="%H:%M:%S",
+                        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
+    
 def main():
-    client = UnitelwayClient(writable={Action.CYCLE_START, Action.FEED_STOP, Object.MODE_SELECTION, "%V7800.B"})  # everything else stays locked
+    setup_logging()
+    client = UnitelwayClient(writable={"%Q0100.3", "%Q0100.4", "%Q0101.4"})  # everything else stays locked
     client.connect_socket("10.1.70.202", 8234)  # USR-TCP232-306 -> COMM1; the master polls link address 0x01
 
     # link and NC status
@@ -44,6 +59,8 @@ def main():
     # client.read_program(programs[0].number, programs[0].group)  # bytes as stored, CRLF line ends
     # client.read_machine_parameters()               # the .xpa text
     # client.read_plc_archive()                    # all ladder and C modules, 111 KB, about 3 minutes
+    # client.read_macros(timeout=10)               # file type H'03', unverified: todo.md J step 1
+    # client.read_axis_calibration(timeout=10)     # file type H'02', unverified: todo.md J step 2
 
     # writes: each needs its entry in writable=
     # mode = client.read_mode()
@@ -58,7 +75,10 @@ def main():
     # client.write_message("PYUNITELWAY TEST")       # NC screen: E/A -> Fehlermeldungen -> Netz-Meldungen
 
     # physical actions: unlock deliberately, only with someone at the machine
-    # client.write_vacuum_pump(True)               # writable={"%Q0700.6"}; write_extraction_hood/_long_workpiece/_wide_workpiece likewise
+    # client.write_vacuum_pump(True)               # writable={"%Q0700.6"}
+    # client.write_extraction_hood(True)
+    # client.write_long_workpiece(True)
+    # client.write_wide_workpiece(True)
     # client.cycle_start()                         # writable={Action.CYCLE_START}: starts the selected programme or MDI block
     # client.cycle_stop()                          # writable={Action.CYCLE_STOP}: CYHLD stop, spindle keeps turning; verified 2026-09-26
 

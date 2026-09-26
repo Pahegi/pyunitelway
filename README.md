@@ -14,15 +14,16 @@ Verified on the machine (2026-09-22; the frames are regression vectors in `tests
 Verified live write: `write_mode` (segment 180, MANUAL and back to AUTO, read back over both
 `read_mode` and `%R16.B`); `write_ladder` (2026-09-23: MSG2 `%W16.B` written and restored, bit and word writes
 on unnamed `%V` memory, all read back; `write_vacuum_pump(True/False)` = `%Q0700.6`, started and stopped the pump); `cycle_start()` (UNI-TE Run, 2026-09-26: a `G4 F2` MDI block ran, a `G0 X2000` moved the machine; `read_cycle_in_progress` = `%R3.2`; `cycle_stop()` = UNI-TE Stop, the CYHLD machining stop, verified the same evening); `write_message`
-(shown under E/A → Fehlermeldungen → Netz-Meldungen). Same pattern, not yet sent: `write_extraction_hood`,
-`write_long_workpiece`, `write_wide_workpiece` (panel latches `%Q0100.3`, `%Q0100.4`, `%Q0101.4`).
+(shown under E/A → Fehlermeldungen → Netz-Meldungen); the panel latches `write_extraction_hood` (`%Q0100.3`, `True`
+lifted the hood), `write_long_workpiece` (`%Q0100.4`) and `write_wide_workpiece` (`%Q0101.4`), all 2026-09-26.
 One lock for every write: nothing is writable unless
 `UnitelwayClient(writable={...})` names the ladder segment (`"%W"`), the variable (`"%W16.B"`) or the NC
 object (`Object.MODE_SELECTION`); `ALL_LADDER_SEGMENTS` / `ALL_NC_OBJECTS` open everything. `write_object` for the other families is
 unit-tested only.
 
 File reading (938914 §4.13/§4.16), verified on the machine 2026-09-26: `read_directory` lists the part programmes in
-the NC RAM (48, in four answers); `read_program`, `read_machine_parameters`, `read_plc_archive` upload one file as bytes
+the NC RAM (48, in four answers); `read_program`, `read_machine_parameters`, `read_plc_archive` (and `read_macros`,
+the resident-macro areas, and `read_axis_calibration`, both verified 2026-09-26 and empty on this machine) upload one file as bytes
 (open, segments of up to 122 bytes, close in every case; `%101`/`%35` byte-identical to the 2023 NCDat backup, the
 parameters `.xpa` and the 111 KB ladder archive read without a resend). No download, no Delete-File.
 

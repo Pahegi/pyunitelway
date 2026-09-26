@@ -483,7 +483,8 @@ class UnitelwayClient:
         ``%SP43/01``. ``%SP43/04`` drives the lift valves ``%Q0800.2`` (50 mm) / ``%Q0800.3`` (160 mm) only while the
         latch is on, from the height memory ``%V942.0/.1`` set by M200-M203. ``False`` therefore lowers the hood
         fully; ``True`` lifts it to the last programmed height (nothing if that is M200). A tool change needs the
-        hood up (both end switches), else feed stop ``%V80.7``. Untested.
+        hood up (both end switches), else feed stop ``%V80.7``. Verified 2026-09-26 20:15 by Paul at the machine:
+        ``True`` lifted the hood (``example/logs/test-20260926-2015*.log``, answer ``FE``).
 
         :param bool on: ``False`` = hood down, ``True`` = hood at the programmed height
         :returns: ``True`` on the ``0xFE`` answer
@@ -505,7 +506,8 @@ class UnitelwayClient:
         34 networks: clamping uses both sides and the template valves, the stops lower on clamp (``%SP30/07``), the
         tool magazine side follows it (``%SP44/02-03``), ``E40028`` mirrors it to the NC. A programme with
         ``E30081 == 1`` (``VHM_LANGTEIL``) forces the latch from its M-function table. Fault 215 if a programme
-        needs it (``E30088`` 1 or 3) and it is off. Untested.
+        needs it (``E30088`` 1 or 3) and it is off. Verified 2026-09-26: True → False → True on the idle machine, each
+        state read back, nothing moved (the stops, clamps and magazine also need a machining side ``%V7FB.0-.3``).
 
         :param bool on: ``True`` selects, ``False`` deselects
         :returns: ``True`` on the ``0xFE`` answer
@@ -527,7 +529,8 @@ class UnitelwayClient:
         ``%SP44/01`` - the key only works outside a cycle, a direct write ignores that gate. With it on, the tool
         magazine is driven to the side away from the machining side (``%SP44/02-03``, ``%Q0800.4/.5``) once a cycle
         has set "Bearbeitung links/rechts". Fault 214 and feed stop ``%V82.4`` if a programme needs it (``E30088``
-        >= 2) and it is off; fault 198 if long and wide are both on with a tool change aborted. Untested.
+        >= 2) and it is off; fault 198 if long and wide are both on with a tool change aborted. Verified 2026-09-26:
+        False → True → False with the long latch cleared meanwhile, each state read back, the magazine did not move.
 
         :param bool on: ``True`` selects, ``False`` deselects
         :returns: ``True`` on the ``0xFE`` answer
@@ -750,6 +753,26 @@ class UnitelwayClient:
         :rtype: bytes
         """
         return self.upload(FileType.PLC_LADDER, PLC_ALL_MODULES << 16, timeout)
+
+    def read_macros(self, timeout=TIMEOUT_SEC):
+        """Resident macros (file type H'03', 938914 §4.13.1; identification "not significant"): the protected
+        part-programme areas 1 customer, 2 OEM and 3 NUM (938818 P95, 938822 §4.5.1). Verified 2026-09-26: one segment,
+        92 bytes, one 29-byte record ``%00`` + 26 opaque bytes per area and ``%99 CR LF``; the NC closed it itself.
+        No reference file exists, the IPC's tools never transferred it.
+
+        :rtype: bytes
+        """
+        return self.upload(FileType.MACROS, 0, timeout)
+
+    def read_axis_calibration(self, timeout=TIMEOUT_SEC):
+        """Axis calibration (file type H'02', 938914 §4.13.1; identification "not significant"), the tables the machine
+        backup of 938822 §8.5 lists beside the parameters. Verified 2026-09-26: text in the ``.xpa`` format, on this
+        machine only the ``%12205000`` software-version header and the DC3 ``;01`` trailer (21 bytes, no table stored);
+        the NC closed it itself.
+
+        :rtype: bytes
+        """
+        return self.upload(FileType.AXIS_CALIBRATION, 0, timeout)
 
     def read_directory(self, start=0, group=0):
         """Part programmes in the NC RAM from ``%start.group`` upward (938914 §4.16), 15 per answer. Verified 2026-09-26.
